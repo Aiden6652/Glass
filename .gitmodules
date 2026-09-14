@@ -1,0 +1,9 @@
+[submodule "Natives/external/DBNumberedSlider"]
+	path = Natives/external/DBNumberedSlider
+	url = https://github.com/khanhduytran0/DBNumberedSlider
+[submodule "Natives/external/ZeroTierFramework"]
+	path = Natives/external/ZeroTierFramework
+	url = https://github.com/zerotier/zerotier-sockets-apple-framework.git
+[submodule "ThirdParty/ZalithLauncher2"]
+	url = https://github.com/ZalithLauncher/ZalithLauncher2.git
+	path = ThirdParty/ZalithLauncher2

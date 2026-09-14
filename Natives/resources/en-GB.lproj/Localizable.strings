@@ -1,0 +1,46 @@
+/*
+  Localizable.strings
+  StringLocalization
+*/
+
+"game.menu.force_close" = "Force close";
+"game.menu.log_output" = "Log output";
+"game.menu.custom_controls" = "Custom controls";
+
+// The play button
+"Play" = "Play";
+"Snapshot" = "Snapshot";
+"Old-beta" = "Old-alpha";
+"Old-alpha" = "Old-alpha";
+"Edit" = "Edit";
+"Remove" = "Remove";
+
+"custom_controls.button_edit.name" = "Name";
+"custom_controls.button_edit.size" = "Size";
+"custom_controls.button_edit.toggleable" = "Toggleable";
+"custom_controls.control_menu.exit" = "Exit";
+"custom_controls.control_menu.save" = "Save";
+"custom_controls.control_menu.load" = "Load";
+"custom_controls.control_menu.add_button" = "Add button";
+
+"launcher.menu.custom_controls" = "Custom controls";
+"login.option.select" = "Select account";
+
+"News" = "News";
+"Settings" = "Settings";
+
+"preference.title.renderer" = "Renderer";
+"preference.title.java_args" = "JVM Launch arguments";
+"preference.title.auto_ram" = "Auto RAM";
+"preference.detail.auto_ram" = "Enables automatic RAM adjuster";
+"preference.detail.allocated_memory" = "Controls how much memory is given to Minecraft";
+
+/* Glass: 本体+加载器串联安装 — 原版预装失败 */
+"i18n_str_191" = "Failed to install vanilla %@.\n\n%@ was not installed. Please check your network and try again.";
+
+/* Glass: 玻璃质感档位设置项 */
+"i18n_str_2068" = "Glass Style";
+"i18n_str_2069" = "Off";
+"i18n_str_2070" = "Standard";
+"i18n_str_2071" = "Strong";
+"i18n_str_2072" = "Liquid Glass";

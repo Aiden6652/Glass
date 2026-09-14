@@ -1,0 +1,45 @@
+/*
+  Localizable.strings
+  StringLocalization
+*/
+
+"game.menu.force_close" = "Мәжбүрлеп жабу";
+"game.menu.log_output" = "Жорнал шығысы";
+"game.menu.custom_controls" = "Өңделген басқару";
+
+// The play button
+"Play" = "Ойнау";
+"Snapshot" = "Снапшот";
+"Old-beta" = "Ескі бета";
+"Old-alpha" = "Ескі альфа";
+"Edit" = "Өңдеу";
+"Remove" = "Алып тастау";
+
+"custom_controls.button_edit.name" = "Атауы";
+"custom_controls.button_edit.size" = "Көлемі";
+"custom_controls.button_edit.toggleable" = "Ауысқыш";
+"custom_controls.control_menu.exit" = "Шығу";
+"custom_controls.control_menu.save" = "Сақтау";
+"custom_controls.control_menu.load" = "Жүктеу";
+"custom_controls.control_menu.add_button" = "Батырма қосу";
+
+"launcher.menu.custom_controls" = "Өңделген басқару";
+"login.option.select" = "Тіркелгі таңдау";
+
+"News" = "Жаңалық";
+"Settings" = "Баптау";
+
+"preference.title.renderer" = "Рендерер";
+"preference.title.java_args" = "JVM қосу аргументі";
+"preference.title.auto_ram" = "Авто ОЕСҚ";
+"preference.detail.auto_ram" = "Автоматты түрде ОЕСҚ-ны басқарады";
+
+/* Glass: 本体+加载器串联安装 — 原版预装失败 */
+"i18n_str_191" = "Failed to install vanilla %@.\n\n%@ was not installed. Please check your network and try again.";
+
+/* Glass: 玻璃质感档位设置项 */
+"i18n_str_2068" = "Шыны стилі";
+"i18n_str_2069" = "Өшірулі";
+"i18n_str_2070" = "Стандартты";
+"i18n_str_2071" = "Күшті";
+"i18n_str_2072" = "Сұйық шыны";

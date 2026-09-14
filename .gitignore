@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+# 构建产物
+artifacts/
+*.ipa
+*.tipa
+*.dSYM/
+# Java 编译产物
+*.class
