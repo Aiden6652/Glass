@@ -24,6 +24,7 @@ static NSString * const kHistoryCellReuseIdentifier = @"DownloadHistoryCell";
     if (self) {
         self.backgroundColor = [UIColor secondarySystemBackgroundColor];
         self.layer.cornerRadius = 12.0;
+        self.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
         self.layer.masksToBounds = YES;
 
         self.nameLabel = [[UILabel alloc] init];
@@ -87,8 +88,10 @@ static NSString * const kHistoryCellReuseIdentifier = @"DownloadHistoryCell";
     // 结果（当前历史仅记录成功条目）
     NSString *resultRaw = [entry[@"result"] isKindOfClass:[NSString class]] ? entry[@"result"] : @"success";
     NSString *resultText = [resultRaw isEqualToString:@"success"]
-        ? NSLocalizedString(@"download.history.result.success", @"成功")
-        : NSLocalizedString(@"download.history.result.failed", @"失败");
+        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+        ? localize(@"download.history.result.success", @"成功")
+        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+        : localize(@"download.history.result.failed", @"失败");
 
     self.detailLabel.text = [NSString stringWithFormat:@"%@ · %@ · %@",
                              typeDisplayName ?: @"--", sizeText, resultText];
@@ -158,13 +161,17 @@ static NSString * const kHistoryCellReuseIdentifier = @"DownloadHistoryCell";
     [super viewDidLoad];
 
     // 适配自定义启动器背景：透明化当前视图控制器，使全局背景壁纸透出（与下载中心一致）
-    [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
+    // ★ [PAGE-GLASS] 顺序修正：透明化必须【最后】执行 —— 原先先透明化、紧接着又写
+    //   systemBackgroundColor(不透明)，等于把透明底盖掉 ⇒ iOS≥26 无系统液态玻璃、壁纸透不出。
     self.view.backgroundColor = [UIColor systemBackgroundColor];
+    [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
 
-    self.title = NSLocalizedString(@"download.history.title", @"下载历史");
+    // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+    self.title = localize(@"download.history.title", @"下载历史");
 
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"download.history.clear", @"清空")
+        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+        initWithTitle:localize(@"download.history.clear", @"清空")
         style:UIBarButtonItemStylePlain
         target:self
         action:@selector(clearTapped:)];
@@ -187,19 +194,29 @@ static NSString * const kHistoryCellReuseIdentifier = @"DownloadHistoryCell";
         return;
     }
 
-    if (!self.emptyLabel) {
-        self.emptyLabel = [[UILabel alloc] init];
-        self.emptyLabel.font = [UIFont systemFontOfSize:16];
-        self.emptyLabel.textColor = [UIColor secondaryLabelColor];
-        self.emptyLabel.textAlignment = NSTextAlignmentCenter;
-        self.emptyLabel.numberOfLines = 0;
-    }
-    self.emptyLabel.text = NSLocalizedString(@"download.history.empty", @"暂无下载历史");
+    // ★ [HOST-BUG-B] 空历史文案被截成「无载史」根因:
+    //   header 用 CGRectMake(0, 0, 0, 240) 建(width=0),紧接着按 header.bounds.size.width - 48
+    //   给 label 设 frame ⇒ label 宽 = -48,文字被裁到只剩前几个字(用户报"无载史")。
+    //   改为把 label 交给 Auto Layout 约束到 header 左右两边(各留 24pt),
+    //   header 宽度由 UITableView 赋给 tableHeaderView 时决定 ⇒ label 永远按实际宽度换行,完整显示。
+    //   label 每次重建,避免复用旧实例时重复添加约束。
+    self.emptyLabel = [[UILabel alloc] init];
+    self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.emptyLabel.font = [UIFont systemFontOfSize:16];
+    self.emptyLabel.textColor = [UIColor secondaryLabelColor];
+    self.emptyLabel.textAlignment = NSTextAlignmentCenter;
+    self.emptyLabel.numberOfLines = 0;
+    // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+    self.emptyLabel.text = localize(@"download.history.empty", @"暂无下载历史");
 
     // 用 tableHeaderView 承载居中空态，避免遮挡导航栏
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 240)];
-    self.emptyLabel.frame = CGRectMake(24, 60, header.bounds.size.width - 48, 60);
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 240)];
     [header addSubview:self.emptyLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.emptyLabel.leadingAnchor  constraintEqualToAnchor:header.leadingAnchor  constant:24],
+        [self.emptyLabel.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-24],
+        [self.emptyLabel.topAnchor      constraintEqualToAnchor:header.topAnchor      constant:60],
+    ]];
     self.tableView.tableHeaderView = header;
 }
 
@@ -209,18 +226,22 @@ static NSString * const kHistoryCellReuseIdentifier = @"DownloadHistoryCell";
     if (self.entries.count == 0) return;
 
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:NSLocalizedString(@"download.history.title", @"下载历史")
-                         message:NSLocalizedString(@"download.history.clear_confirm", @"确定清空全部下载历史？此操作不可恢复。")
+        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+        alertControllerWithTitle:localize(@"download.history.title", @"下载历史")
+                         // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+                         message:localize(@"download.history.clear_confirm", @"确定清空全部下载历史？此操作不可恢复。")
                   preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
-        actionWithTitle:NSLocalizedString(@"download.history.clear", @"清空")
+        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+        actionWithTitle:localize(@"download.history.clear", @"清空")
                   style:UIAlertActionStyleDestructive
                 handler:^(UIAlertAction *action) {
         [[DownloadHistoryStore sharedStore] clearAll];
         [self reloadEntries];
     }]];
     [alert addAction:[UIAlertAction
-        actionWithTitle:NSLocalizedString(@"download.history.cancel", @"取消")
+        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+        actionWithTitle:localize(@"download.history.cancel", @"取消")
                   style:UIAlertActionStyleCancel
                 handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];

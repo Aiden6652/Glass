@@ -177,6 +177,7 @@
         self.installedBadge.translatesAutoresizingMaskIntoConstraints = NO;
         self.installedBadge.backgroundColor = [UIColor systemGreenColor];
         self.installedBadge.layer.cornerRadius = 7;
+        self.installedBadge.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
         self.installedBadge.layer.masksToBounds = YES;
         self.installedBadge.layer.borderColor = [UIColor systemBackgroundColor].CGColor;
         self.installedBadge.layer.borderWidth = 1.5;

@@ -206,13 +206,3 @@
 "controller_configurator.title.type.xbox" = "Xbox";
 "controller_configurator.title.type.playstation" = "PlayStation";
 "controller_configurator.playstation.title.named_back" = "Pilih";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Gagal menginstal vanilla %@.\n\n%@ belum diinstal. Periksa koneksi jaringan Anda dan coba lagi.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Gaya kaca";
-"i18n_str_2069" = "Nonaktif";
-"i18n_str_2070" = "Standar";
-"i18n_str_2071" = "Kuat";
-"i18n_str_2072" = "Kaca cair";

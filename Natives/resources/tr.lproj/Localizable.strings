@@ -192,13 +192,3 @@ Bu seçenek varsayılan JitStreamer sunucusunu kullanıyorsanız olduğu gibi b�
 "preference.title.debug_show_layout_overlap" = "Düzenin üst üste geçmesini göster";
 "preference.detail.debug_show_layout_overlap" = "Üst üste kalan her yeri görebilmek için her düzeni saydam renkle donat.";
 "controller_configurator.playstation.title.named_back" = "Seç";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Vanilla %@ yüklenemedi.\n\n%@ yüklenmedi. Ağ bağlantınızı kontrol edip tekrar deneyin.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Cam stili";
-"i18n_str_2069" = "Kapalı";
-"i18n_str_2070" = "Standart";
-"i18n_str_2071" = "Güçlü";
-"i18n_str_2072" = "Sıvı cam";

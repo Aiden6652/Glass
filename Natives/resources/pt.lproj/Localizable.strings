@@ -48,13 +48,3 @@
 "preference.title.auto_ram" = "RAM automática";
 "preference.detail.auto_ram" = "Ativa o ajuste automático de RAM";
 "preference.detail.allocated_memory" = "Controla quanta memória é dada ao Minecraft";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Falha ao instalar a versão vanilla %@.\n\n%@ não foi instalado. Verifique sua conexão de rede e tente novamente.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Estilo de vidro";
-"i18n_str_2069" = "Desligado";
-"i18n_str_2070" = "Padrão";
-"i18n_str_2071" = "Forte";
-"i18n_str_2072" = "Vidro líquido";

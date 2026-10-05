@@ -33,6 +33,8 @@
 @property (nonatomic, strong) UIButton *loginButton;
 @property (nonatomic, strong) UIActivityIndicatorView *loginIndicator;
 @property (nonatomic, strong) UILabel *errorLabel;
+// ★ [ACCT-DUP] 重入守卫：登录请求在飞期间锁死提交入口，防重复提交产生两条账户。
+@property (nonatomic) BOOL ameLoginInFlight;
 
 @end
 
@@ -70,6 +72,14 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self.navigationController setNavigationBarHidden:NO animated:YES];
+}
+
+/// ★ [ACCT-DONE] 离开本页(成功被 pop / 失败退出 / 宿主换走)一律解锁提交态 ——
+///   防"回调丢失/宿主未 pop"把提交键永久转圈锁死。放在 viewDidDisappear:此刻视图已不可见,
+///   即便成功路径故意保持的 in-flight 锁也一并归还,不会造成"pop 动画间隙可重复提交"。
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    [self setLoginInProgress:NO];
 }
 
 #pragma mark - Setup
@@ -145,6 +155,7 @@
     self.headerCard.translatesAutoresizingMaskIntoConstraints = NO;
     self.headerCard.backgroundColor = [UIColor secondarySystemBackgroundColor];
     self.headerCard.layer.cornerRadius = 16;
+    self.headerCard.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     [[BackgroundManager sharedManager] applyEffectToView:self.headerCard];
 
     self.headerIcon = [[UIImageView alloc] init];
@@ -208,6 +219,7 @@
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.backgroundColor = [UIColor secondarySystemBackgroundColor];
     card.layer.cornerRadius = 14;
+    card.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     [[BackgroundManager sharedManager] applyEffectToView:card];
 
     UIImageView *icon = [[UIImageView alloc] init];
@@ -294,6 +306,7 @@
                         : [UIColor systemOrangeColor];
     self.loginButton.backgroundColor = accent;
     self.loginButton.layer.cornerRadius = 14;
+    self.loginButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     [self.loginButton addTarget:self action:@selector(loginTapped) forControlEvents:UIControlEventTouchUpInside];
 
     self.loginIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhite];
@@ -315,6 +328,8 @@
 }
 
 - (void)loginTapped {
+    // ★ [ACCT-DUP] 重入守卫：登录请求在飞时忽略重复提交（连点/回车），避免同一账户登录两次。
+    if (self.ameLoginInFlight) return;
     [self dismissKeyboard];
     [self hideError];
 
@@ -383,7 +398,7 @@
                     return;
                 }
 
-                [sSelf setLoginInProgress:NO];
+                [sSelf hideError];
 
                 if (success && (status == nil ||
                                 ([status isKindOfClass:[NSString class]] && [status isEqualToString:@"DEMO"]))) {
@@ -391,13 +406,16 @@
                         showDialog(localize(@"login.warn.title.demomode", nil),
                                    localize(@"login.warn.message.demomode", nil));
                     }
+                    // ★ [ACCT-DUP] 成功后本页会被宿主 pop：**保持** in-flight 锁（不调 setLoginInProgress:NO），
+                    //   避免 pop 动画的间隙里按钮又可点、重复提交同一账户。
                     if (sSelf.onLoginComplete) {
                         sSelf.onLoginComplete(YES, nil);
                     }
                     return;
                 }
 
-                // 失败
+                // 失败：恢复交互，允许重试（★ [ACCT-DUP] 与 in-flight 标志同步解锁）
+                [sSelf setLoginInProgress:NO];
                 NSString *errMsg;
                 if ([status isKindOfClass:[NSError class]]) {
                     errMsg = [(NSError *)status localizedDescription];
@@ -418,6 +436,8 @@
 }
 
 - (void)setLoginInProgress:(BOOL)inProgress {
+    // ★ [ACCT-DUP] 与 UI 禁用同步的重入标志：置位即锁死 loginTapped，恢复时解锁。
+    self.ameLoginInFlight = inProgress;
     self.loginButton.userInteractionEnabled = !inProgress;
     self.usernameField.userInteractionEnabled = !inProgress;
     self.passwordField.userInteractionEnabled = !inProgress;

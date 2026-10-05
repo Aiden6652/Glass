@@ -11,9 +11,9 @@
 #import "AiToolRegistry.h"
 #import "AiSafetyManager.h"
 
-/// 工具循环最多轮数（放开限制：原 10，改为较大值，避免复杂任务被截断）
+/// 工具循环最多轮数（★ [GLASS] 放开限制：原 10，改为较大值，避免复杂任务被截断）
 static const NSInteger kMaxToolRounds = 200;
-/// 同一工具调用最多尝试次数（含失败）（放开限制：原 3，改为较大值）
+/// 同一工具调用最多尝试次数（含失败）（★ [GLASS] 放开限制：原 3，改为较大值）
 static const NSInteger kMaxToolAttempts = 30;
 
 /// 工具调用结果已写入会话的消息变更通知名（object=AiSession）
@@ -199,7 +199,7 @@ static NSString * const kAiSessionMessagesDidChangeNotification = @"AiSessionMes
             "如果不确定自己有哪些工具可用，或调用时收到「未知工具」提示，请先调用 list_tools 获取准确工具名再重试，不要凭猜测反复调用。"];
     }
 
-    // 工具能力兜底注入：把完整工具清单以纯文本形式写进 system prompt。
+    // ★ [GLASS] 工具能力兜底注入：把完整工具清单以纯文本形式写进 system prompt。
     // 这样即使某些客户端/模型不支持原生 function calling（tools 字段被忽略），
     // 模型仍能看到自己有哪些能力、每个工具需要什么参数，并能用文本形式发起调用
     // （由下方 parseTextToolCallsFromContent 解析）。
@@ -274,7 +274,7 @@ static NSString * const kAiSessionMessagesDidChangeNotification = @"AiSessionMes
                         chunkHandler:chunkHandler
                   completionHandler:completionHandler];
         } else {
-            // 原生 tool_calls 为空时，尝试从文本回复里解析「文本形式工具调用」。
+            // ★ [GLASS] 原生 tool_calls 为空时，尝试从文本回复里解析「文本形式工具调用」。
             // 这是给不支持 function calling 的模型/中转做的兜底：
             // 模型按 system prompt 约定输出 ```tool_call {"name":...,"arguments":{...}} ```，
             // 这里解析成与原生 tool_calls 相同的结构，走既有执行链路。
@@ -299,7 +299,7 @@ static NSString * const kAiSessionMessagesDidChangeNotification = @"AiSessionMes
     }];
 }
 
-#pragma mark - 文本形式工具调用解析（function calling 兜底）
+#pragma mark - ★ [GLASS] 文本形式工具调用解析（function calling 兜底）
 
 /// 从助手文本回复中解析形如 ```tool_call {"name":"x","arguments":{...}} ``` 的调用块，
 /// 兼容不带围栏的裸 JSON（需同时含 name 与 arguments 字段）。
@@ -512,7 +512,7 @@ static NSString * const kAiSessionMessagesDidChangeNotification = @"AiSessionMes
         // 校验工具是否存在
         id<AiTool> tool = [[AiToolRegistry sharedRegistry] toolForName:name ?: @""];
         if (!tool) {
-            // 未知工具时把当前可用工具名一并回喂，让模型自我纠正后重试，
+            // ★ [GLASS] 未知工具时把当前可用工具名一并回喂，让模型自我纠正后重试，
             // 而不是卡在「未知工具」上反复失败。
             NSArray<NSString *> *avail = [[AiToolRegistry sharedRegistry] allToolNames];
             NSString *hint = [NSString stringWithFormat:@"未知工具：%@\n当前可用工具（%lu 个）：%@",

@@ -28,11 +28,34 @@
 #import "external/UnzipKit/UZKArchive.h"
 
 #import <CommonCrypto/CommonDigest.h>
+#import <pthread.h>
 
 NSString *const ForgeProcessorExecutorErrorDomain = @"ForgeProcessorExecutorErrorDomain";
 
 // headless JVM 中运行的 processor runner 主类
 static NSString *const kProcessorRunnerMainClass = @"net.kdt.pojavlaunch.tools.ForgeProcessorRunner";
+
+// Task 145/146：headless JVM 专用线程上下文（见 runProcessorsWithProfile 内注释）。
+// Task 146 语义修正：libjli 的终止设计 = dummyTimer 线程调 exit(0) 杀进程，
+// JLI_Launch 永远不会返回调用方；exit 被抑制后本线程卡死在 JLI 内部，
+// pthread_join 永远等不到（装机 2026-09-22 23:38 会话实锤：抑制日志之后
+// 直接无限 0.85 (4/4) 刷屏，"launchHeadlessJVM returned" 从未出现）。
+// 等待方改看 g_ame_headlessJvmFinished 标志（hooked_exit 抑制分支置位 /
+// 本函数正常返回时置位）；本线程允许永久滞留 JLI，pthread_detach 兜底。
+typedef struct {
+    NSString *mainClass;
+    NSArray<NSString *> *args;
+    int minJava;
+    int ret;
+} ame145_headlessCtx;
+
+static void *ame145_headlessJvmThread(void *raw) {
+    ame145_headlessCtx *ctx = (ame145_headlessCtx *)raw;
+    ctx->ret = launchHeadlessJVM(ctx->mainClass, ctx->args, ctx->minJava);
+    // Task 146：正常返回路径（JLI 启动失败 -1~-6 等）也置终结信号。
+    atomic_store(&g_ame_headlessJvmFinished, 1);
+    return NULL;
+}
 
 static NSString *const kUserAgent =
     @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
@@ -218,10 +241,65 @@ static const double kInnerProcessorsStart = 0.45;
     // 按原版 MC 版本推断 processor 所需 Java 大版本（对齐游戏运行时要求）
     int minJava = [self inferJavaMajorForMinecraft:minecraftVersion];
     NSLog(@"[ForgeProcExec] Launching headless JVM (minJava=%d)", minJava);
-    int ret = launchHeadlessJVM(kProcessorRunnerMainClass,
-                                @[commandsPath, statusPath],
-                                minJava);
+    // Task 144：headless JVM 执行期抑制进程级 exit —— 安装器 JVM 结束时
+    // libjli 内部线程会 exit(0) 结束自身，但 JVM 与启动器同进程，此前整个
+    // app 被带走（用户视角"forge安装闪退"，modpack 卡在 85%）。置位后
+    // hooked_exit 改为只终结调用线程；JLI_Launch 正常返回，下方照常读
+    // status.json 判定安装成败。
+    atomic_store(&g_ame_suppressJvmExit, 1);
+    // Task 145：headless JVM 移到独立 pthread 上执行。
+    //
+    // Task 144 病历补充（装机 latestlog.forge 22:21 会话实锤）：JLI_Launch 在
+    // JVM main 返回后由 libjli 启动线程（fatal-trace 栈帧 dummyTimer）调用
+    // exit(0) 终结进程 —— 该线程就是本函数的调用线程。Task144 的抑制把它转
+    // 成 pthread_exit，结果 launchHeadlessJVM 永不返回，下方 status.json 终态
+    // 判定与收尾代码永远不执行，轮询线程挂死（装机表现为进度恒 0.85、
+    // "正在执行安装任务 (4/4)" 刷屏直到用户切后台）。
+    //
+    // Task 146（装机 2026-09-22 23:38 会话二次实锤）：专用线程 + pthread_join
+    // 依旧挂死 —— libjli 的终止设计本身就是"dummyTimer 线程 exit(0) 杀进程"，
+    // exit 被抑制成 pthread_exit 后，launchHeadlessJVM 卡死在 JLI 内部等待
+    // 一个永远不会到来的进程终止，join 等不到线程终结。改为等待
+    // g_ame_headlessJvmFinished 终结信号（hooked_exit 抑制分支 / 线程函数
+    // 正常返回两个路径都会置位）；本线程 detach 兜底，允许永久滞留 JLI
+    //（一次性安装流程，泄漏 64MB 虚拟内存可接受，旧设计里整个进程都会死）。
+    ame145_headlessCtx ame145_ctx = {
+        .mainClass = kProcessorRunnerMainClass,
+        .args = @[commandsPath, statusPath],
+        .minJava = minJava,
+        .ret = 0,
+    };
+    pthread_attr_t ame145_attr;
+    pthread_attr_init(&ame145_attr);
+    // JVM 原生侧调用深度不可控，给足栈空间（虚拟内存，实际按需提交）。
+    pthread_attr_setstacksize(&ame145_attr, 64ull * 1024 * 1024);
+    pthread_t ame145_tid = NULL;
+    int ame145_rc = pthread_create(&ame145_tid, &ame145_attr, ame145_headlessJvmThread, &ame145_ctx);
+    pthread_attr_destroy(&ame145_attr);
+    if (ame145_rc == 0) {
+        // Task 146：等终结信号而非 join（理由见上）。0.5s 轮询 + 20 分钟
+        // 上限（超时 = 极端异常路径漏置信号，照常走 status.json 判定，
+        // 与旧行为相比不会更坏；轮询线程仍在打印实时进度）。
+        int ame146_waited = 0;
+        while (!atomic_load(&g_ame_headlessJvmFinished) && ame146_waited < 2400) {
+            usleep(500 * 1000);
+            ame146_waited++;
+        }
+        if (atomic_load(&g_ame_headlessJvmFinished)) {
+            NSLog(@"[ForgeProcExec] Task146: headless JVM finished (%s), reading status.json",
+                  ame146_waited > 0 ? "exit-suppressed or returned" : "already done");
+        } else {
+            NSLog(@"[ForgeProcExec] Task146: headless JVM wait timeout (%d s), reading status.json anyway", ame146_waited / 2);
+        }
+        pthread_detach(ame145_tid);
+    } else {
+        // 兜底：线程创建失败时保持旧行为（同线程执行）。
+        NSLog(@"[ForgeProcExec] Task145: pthread_create failed (%d), running headless JVM inline", ame145_rc);
+        ame145_ctx.ret = launchHeadlessJVM(ame145_ctx.mainClass, ame145_ctx.args, ame145_ctx.minJava);
+    }
+    atomic_store(&g_ame_suppressJvmExit, 0);
     pollDone = YES;
+    int ret = ame145_ctx.ret;
 
     if (ret != 0) {
         NSLog(@"[ForgeProcExec] launchHeadlessJVM returned %d", ret);
@@ -1097,6 +1175,8 @@ static const double kInnerProcessorsStart = 0.45;
 /// （对齐游戏运行时要求：1.20.5+/1.21+ → 21，1.17+ → 17，其余 8）
 + (int)inferJavaMajorForMinecraft:(NSString *)minecraftVersion {
     NSArray *parts = [minecraftVersion componentsSeparatedByString:@"."];
+    // Task159：年份制 26.x（"26.2"）此前落到尾部 fallback 17——26.x 官方要求 Java 25
+    if (parts.count >= 2 && [parts[0] integerValue] >= 26) return 25;
     if (parts.count >= 2 && [parts[0] integerValue] == 1) {
         NSInteger minor = [parts[1] integerValue];
         NSInteger patch = (parts.count >= 3) ? [parts[2] integerValue] : 0;

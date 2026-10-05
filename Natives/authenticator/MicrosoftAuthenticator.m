@@ -24,8 +24,10 @@ typedef void(^XSTSCallback)(NSString *xsts, NSString *uhs);
         self.authData[@"msaRefreshToken"] = response[@"refresh_token"];
         [self acquireXBLToken:response[@"access_token"] callback:callback];
     } failure:^(NSURLSessionDataTask *task, NSError *error) {
-        if (error.code == NSURLErrorDataNotAllowed) {
-            // The account token is expired and offline
+        if (isConnectivityError(error)) {
+            // 无可用网络时刷新不了 token，但启动器有离线路径，直接走离线
+            // 而不是拒绝启动。旧代码只认 NSURLErrorDataNotAllowed（应用被关蜂窝
+            // 数据），飞行模式/无 Wi-Fi 的 NotConnectedToInternet 反而进失败分支。
             self.authData[@"accessToken"] = @"offline";
             callback(nil, YES);
         } else {
@@ -98,7 +100,10 @@ typedef void(^XSTSCallback)(NSString *xsts, NSString *uhs);
     AFHTTPSessionManager *manager = AFHTTPSessionManager.manager;
     manager.requestSerializer = AFJSONRequestSerializer.serializer;
     [manager POST:@"https://xsts.auth.xboxlive.com/xsts/authorize" parameters:data headers:nil progress:nil success:^(NSURLSessionDataTask *task, NSDictionary *response) {
-        NSString *uhs = response[@"DisplayClaims"][@"xui"][0][@"uhs"];
+        // ★ [ACCT-AUDIT] 崩溃防护：XSTS 响应结构异常时 DisplayClaims.xui 可能为空，
+        //   对空数组取 [0] 会越界抛 NSRangeException 直接崩。逐层判类型与数量后再取。
+        NSArray *xui = response[@"DisplayClaims"][@"xui"];
+        NSString *uhs = ([xui isKindOfClass:NSArray.class] && xui.count > 0) ? xui[0][@"uhs"] : nil;
         xstsCallback(response[@"Token"], uhs);
     } failure:^(NSURLSessionDataTask *task, NSError *error) {
         NSString *errorString;
@@ -141,8 +146,24 @@ typedef void(^XSTSCallback)(NSString *xsts, NSString *uhs);
 
     AFHTTPSessionManager *manager = AFHTTPSessionManager.manager;
     [manager GET:@"https://profile.xboxlive.com/users/me/profile/settings?settings=PublicGamerpic,Gamertag" parameters:nil headers:headers progress:nil success:^(NSURLSessionDataTask *task, NSDictionary *response) {
-        self.authData[@"profilePicURL"] = [NSString stringWithFormat:@"%@&h=120&w=120", response[@"profileUsers"][0][@"settings"][0][@"value"]];
-        self.authData[@"xboxGamertag"] = response[@"profileUsers"][0][@"settings"][1][@"value"];
+        // ★ [ACCT-AUDIT] 崩溃防护：profile 接口异常时 profileUsers/settings 可能缺项或为空，
+        //   连续下标 [0]/[1] 会越界抛异常。逐层判类型与数量后再取；结构缺失时仍走成功回调。
+        NSArray *profileUsers = response[@"profileUsers"];
+        NSDictionary *firstUser = ([profileUsers isKindOfClass:NSArray.class] && profileUsers.count > 0 &&
+                                   [profileUsers[0] isKindOfClass:NSDictionary.class]) ? profileUsers[0] : nil;
+        NSArray *settings = firstUser[@"settings"];
+        if ([settings isKindOfClass:NSArray.class] && settings.count > 0) {
+            id picValue = [settings[0] isKindOfClass:NSDictionary.class] ? settings[0][@"value"] : nil;
+            if (picValue) {
+                self.authData[@"profilePicURL"] = [NSString stringWithFormat:@"%@&h=120&w=120", picValue];
+            }
+        }
+        if ([settings isKindOfClass:NSArray.class] && settings.count > 1) {
+            id tagValue = [settings[1] isKindOfClass:NSDictionary.class] ? settings[1][@"value"] : nil;
+            if (tagValue) {
+                self.authData[@"xboxGamertag"] = tagValue;
+            }
+        }
         callback(nil, YES);
     } failure:^(NSURLSessionDataTask *task, NSError *error) {
         callback(error, NO);
@@ -178,32 +199,51 @@ typedef void(^XSTSCallback)(NSString *xsts, NSString *uhs);
     manager.requestSerializer = AFJSONRequestSerializer.serializer;
     [manager GET:@"https://api.minecraftservices.com/minecraft/profile" parameters:nil headers:headers progress:nil success:^(NSURLSessionDataTask *task, NSDictionary *response) {
         NSString *uuid = response[@"id"];
-        self.authData[@"profileId"] = [NSString stringWithFormat:@"%@-%@-%@-%@-%@",
-            [uuid substringWithRange:NSMakeRange(0, 8)],
-            [uuid substringWithRange:NSMakeRange(8, 4)],
-            [uuid substringWithRange:NSMakeRange(12, 4)],
-            [uuid substringWithRange:NSMakeRange(16, 4)],
-            [uuid substringWithRange:NSMakeRange(20, 12)]
-        ];
+        // ★ [ACCT-AUDIT] 崩溃防护：profile 接口异常时 id 可能缺失/过短，
+        //   直接 substringWithRange 会越界抛 NSRangeException。
+        if ([uuid isKindOfClass:NSString.class] && uuid.length >= 32) {
+            self.authData[@"profileId"] = [NSString stringWithFormat:@"%@-%@-%@-%@-%@",
+                [uuid substringWithRange:NSMakeRange(0, 8)],
+                [uuid substringWithRange:NSMakeRange(8, 4)],
+                [uuid substringWithRange:NSMakeRange(12, 4)],
+                [uuid substringWithRange:NSMakeRange(16, 4)],
+                [uuid substringWithRange:NSMakeRange(20, 12)]
+            ];
+        } else {
+            self.authData[@"profileId"] = uuid ?: @"";
+        }
+        self.authData[@"profilePicURL"] = [NSString stringWithFormat:@"https://api.rms.net.cn/head/%@", self.authData[@"username"]];
         self.authData[@"username"] = response[@"name"];
-        // 头像 URL 改用 profileId（正版 UUID，稳定唯一），避免 username 为空时拼出 (null)
-        self.authData[@"profilePicURL"] = [NSString stringWithFormat:@"https://api.rms.net.cn/head/%@", self.authData[@"profileId"]];
         // 微软账户用 xuid 作为 accountId（全局唯一且稳定），使同名账户可共存
-        self.authData[@"accountId"] = self.authData[@"xuid"];
+        // ★ [ACCT-DUP-MS] xuid 缺失时不写死 accountId（交给 super saveChanges 按兜底身份键收敛），
+        //   避免把 accountId 置为 nil 后每次保存都现场生成随机 id ⇒ 冒出多条同账户。
+        if ([self.authData[@"xuid"] isKindOfClass:[NSString class]] && [self.authData[@"xuid"] length] > 0) {
+            self.authData[@"accountId"] = self.authData[@"xuid"];
+        }
         callback(nil, [self saveChanges]);
     } failure:^(NSURLSessionDataTask *task, NSError *error) {
         NSData *errorData = error.userInfo[AFNetworkingOperationFailingURLResponseDataErrorKey];
-        NSDictionary *errorDict = [NSJSONSerialization JSONObjectWithData: errorData options:kNilOptions error:nil];
+        // ★ [ACCT-AUDIT] 崩溃防护：网络类错误没有响应体（errorData=nil），
+        //   对 nil 调用 JSONObjectWithData: 会抛 NSInvalidArgumentException 直接崩。
+        //   与 acquireXSTSFor: 采用同一处理口径（那里已有 nil 守卫）。
+        NSDictionary *errorDict = (errorData != nil)
+            ? ([NSJSONSerialization JSONObjectWithData:errorData options:kNilOptions error:nil] ?: @{})
+            : @{};
         if ([errorDict[@"error"] isEqualToString:@"NOT_FOUND"]) {
             // If there is no profile, use the Xbox gamertag as username with Demo mode
             self.authData[@"profileId"] = @"00000000-0000-0000-0000-000000000000";
             self.authData[@"username"] = [NSString stringWithFormat:@"Demo.%@", self.authData[@"xboxGamertag"]];
             // Demo 账户同样用 xuid 作为 accountId
-            self.authData[@"accountId"] = self.authData[@"xuid"];
+            // ★ [ACCT-DUP-MS] 同上：xuid 缺失时不写死 accountId，交由 super 按兜底身份键收敛。
+            if ([self.authData[@"xuid"] isKindOfClass:[NSString class]] && [self.authData[@"xuid"] length] > 0) {
+                self.authData[@"accountId"] = self.authData[@"xuid"];
+            }
 
             if ([self saveChanges]) {
+                // ★ [ACCT-DUP] 一次性回调：原先此处连续发 callback(@"DEMO",YES) + callback(nil,YES)，
+                //   列表侧 callbackMicrosoftAuth 会对两次回调各跑一遍 reload/dismiss/whenItemSelected
+                //   （重复触发）。Demo 提示与成功收尾由 @"DEMO" 这一次负责，去掉冗余的第二次回调。
                 callback(@"DEMO", YES);
-                callback(nil, YES);
             } else {
                 callback(nil, NO);
             }
@@ -234,16 +274,12 @@ typedef void(^XSTSCallback)(NSString *xsts, NSString *uhs);
 }
 
 - (BOOL)saveChanges {
-    // 修复：原版把 token 存进 Keychain 后从 authData 删除，导致账号 JSON 里没有
-    // accessToken；Java 启动时只能依赖 Keychain/JNI 链路读回，一旦该链路失败
-    // （JNI 只允许调用一次/无 nil 检查/Keychain 环境问题）token 丢失 → 离线 → 无皮肤。
-    // 现在：Keychain 照存（双保险，失败只警告不中断），但 token 也保留在 authData 中
-    // 随账号一起写入 accounts/*.json。Java 端优先从 JSON 读 token，不再依赖 Keychain。
     BOOL savedToKeychain = [self setAccessToken:self.authData[@"accessToken"] refreshToken:self.authData[@"msaRefreshToken"]];
     if (!savedToKeychain) {
-        NSLog(@"[MicrosoftAuthenticator] Warning: failed to save tokens to keychain, using account file only");
+        showDialog(localize(@"Error", nil), @"Failed to save account tokens to keychain");
+        return NO;
     }
-    // 不再 removeObjectsForKeys:accessToken/msaRefreshToken —— 让 token 写进账号 JSON
+    [self.authData removeObjectsForKeys:@[@"accessToken", @"msaRefreshToken"]];
     return [super saveChanges];
 }
 

@@ -6,7 +6,6 @@
 #import "AIMessageCell.h"
 #import "MarkdownParser.h"
 #import "LauncherPreferences.h"
-#import "GlassTheme.h"
 
 // 说明：助手气泡采用白 0.08 半透明底，聊天气泡不叠加 UIVisualEffectView 毛玻璃，
 // 以避免滚动表格中反复插入模糊视图导致的性能/复用问题；外层内容区已由
@@ -139,42 +138,17 @@ static const CGFloat kMsgCornerRadius = 12.0;
         self.contentTextView.attributedText = attr;
     }
 
-    // 气泡样式（Glass 主题）
+    // 气泡样式
     if (isUser) {
-        // 用户消息：右对齐，accent 色调淡底 + labelColor 文字
-        self.bubbleView.backgroundColor = [GlassTheme userBubbleColor];
+        // 用户消息：右对齐，accent 色调 0.10 底 + labelColor 文字
+        self.bubbleView.backgroundColor = [accentColor() colorWithAlphaComponent:0.10];
         self.contentTextView.textColor = contentColor;
         [self rebuildHorizontalConstraintsForUser:YES];
     } else {
-        // 助手消息：左对齐，玻璃容器色 + MarkdownParser 内置系统文字色 + 毛玻璃
-        self.bubbleView.backgroundColor = [GlassTheme assistantBubbleColor];
+        // 助手消息：左对齐，白 0.08 底 + MarkdownParser 内置系统文字色 + 毛玻璃
+        self.bubbleView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
         [self rebuildHorizontalConstraintsForUser:NO];
     }
-
-    // 玻璃描边：独立 CAShapeLayer，不占用 layer.border，避免与圆角裁剪冲突
-    [self applyGlassBorder];
-}
-
-/// 给气泡加玻璃描边（复用 GlassTheme 的统一边框色/宽度）
-- (void)applyGlassBorder {
-    if (!self.bubbleView) return;
-    const NSString *layerName = @"glassBubbleEdge";
-    CAShapeLayer *edge = nil;
-    for (CALayer *l in self.bubbleView.layer.sublayers) {
-        if ([l.name isEqual:layerName]) { edge = (CAShapeLayer *)l; break; }
-    }
-    if (!edge) {
-        edge = [CAShapeLayer layer];
-        edge.name = (NSString *)layerName;
-        edge.fillColor = [UIColor clearColor].CGColor;
-        // 插到最底层，避免遮住内容
-        [self.bubbleView.layer insertSublayer:edge atIndex:0];
-    }
-    CGFloat radius = self.bubbleView.layer.cornerRadius;
-    edge.path = [UIBezierPath bezierPathWithRoundedRect:self.bubbleView.bounds
-                                         cornerRadius:radius].CGPath;
-    edge.strokeColor = [GlassTheme glassBorderColor].CGColor;
-    edge.lineWidth = [GlassTheme borderWidth];
 }
 
 /// 重建气泡水平对齐约束（用户右对齐，助手左对齐）
@@ -208,14 +182,6 @@ static const CGFloat kMsgCornerRadius = 12.0;
             [self.bubbleView.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-kMsgHMargin],
         ]];
     }
-}
-
-#pragma mark - 布局
-
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    // 气泡尺寸确定后重算玻璃描边路径（bounds 变化时 CAShapeLayer 不会自动跟随）
-    [self applyGlassBorder];
 }
 
 #pragma mark - 工具卡片文本

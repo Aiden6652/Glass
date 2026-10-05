@@ -21,6 +21,9 @@
 @property (nonatomic, strong) UIView *headerContainer;
 @property (nonatomic, strong) UILabel *headerTitleLabel;
 @property (nonatomic, strong) UILabel *headerSubtitleLabel;
+// ★ [ACCT-DUP] 重入守卫：本页选中一种登录方式后即锁死，忽略后续点击，
+//   避免快速双击触发两次登录（本地账户 = 两个随机 UUID = 两条相同账户）。
+@property (nonatomic) BOOL ameLoginTypeSelected;
 @end
 
 @implementation AccountLoginViewController
@@ -137,7 +140,7 @@
     self.headerTitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.headerTitleLabel.text = localize(@"i18n_str_17", nil);
     self.headerTitleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:26] weight:UIFontWeightBold];
-    self.headerTitleLabel.textColor = [UIColor whiteColor];
+    self.headerTitleLabel.textColor = [UIColor labelColor];   // ★ [HOST-BUG-A]
     self.headerTitleLabel.numberOfLines = 1;
     [self.headerContainer addSubview:self.headerTitleLabel];
 
@@ -145,7 +148,7 @@
     self.headerSubtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.headerSubtitleLabel.text = localize(@"i18n_str_18", nil);
     self.headerSubtitleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:14] weight:UIFontWeightRegular];
-    self.headerSubtitleLabel.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.65];
+    self.headerSubtitleLabel.textColor = [UIColor secondaryLabelColor];   // ★ [HOST-BUG-A]
     self.headerSubtitleLabel.numberOfLines = 0;
     [self.headerContainer addSubview:self.headerSubtitleLabel];
 
@@ -176,7 +179,7 @@
     card.layer.cornerRadius = [ScreenUtils dp:16];
     card.layer.cornerCurve = kCACornerCurveContinuous;
     card.layer.borderWidth = 0.5;
-    card.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12].CGColor;
+    card.layer.borderColor = [UIColor separatorColor].CGColor;   // ★ [HOST-BUG-A]
     // 启用触摸交互
     card.userInteractionEnabled = YES;
 
@@ -188,6 +191,7 @@
     iconCircle.translatesAutoresizingMaskIntoConstraints = NO;
     iconCircle.backgroundColor = [accentColor colorWithAlphaComponent:0.18];
     iconCircle.layer.cornerRadius = [ScreenUtils dp:24];
+    iconCircle.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     iconCircle.userInteractionEnabled = NO;
     [card addSubview:iconCircle];
 
@@ -205,7 +209,7 @@
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     titleLabel.text = title;
     titleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:17] weight:UIFontWeightSemibold];
-    titleLabel.textColor = [UIColor whiteColor];
+    titleLabel.textColor = [UIColor labelColor];   // ★ [HOST-BUG-A]
     titleLabel.numberOfLines = 1;
     titleLabel.userInteractionEnabled = NO;
     [card addSubview:titleLabel];
@@ -215,7 +219,7 @@
     descLabel.translatesAutoresizingMaskIntoConstraints = NO;
     descLabel.text = description;
     descLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:13] weight:UIFontWeightRegular];
-    descLabel.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.60];
+    descLabel.textColor = [UIColor secondaryLabelColor];   // ★ [HOST-BUG-A]
     descLabel.numberOfLines = 0;
     descLabel.userInteractionEnabled = NO;
     [card addSubview:descLabel];
@@ -224,7 +228,7 @@
     UIImageView *chevron = [[UIImageView alloc] init];
     chevron.translatesAutoresizingMaskIntoConstraints = NO;
     chevron.image = [UIImage systemImageNamed:@"chevron.right"];
-    chevron.tintColor = [[UIColor whiteColor] colorWithAlphaComponent:0.40];
+    chevron.tintColor = [UIColor tertiaryLabelColor];   // ★ [HOST-BUG-A]
     chevron.contentMode = UIViewContentModeScaleAspectFit;
     chevron.userInteractionEnabled = NO;
     [card addSubview:chevron];
@@ -284,9 +288,19 @@
 - (void)cardTapped:(UITapGestureRecognizer *)gesture {
     UIView *card = gesture.view;
     if (!card) return;
+    // ★ [ACCT-DUP] 重入守卫：动画期间本页仍可接收点击 ⇒ 双击会触发两次 onSelectLoginType，
+    //   进而发起两次登录（本地账户每次生成新随机 UUID ⇒ 冒出两条一模一样账户）。
+    //   一旦选中即置位并锁死整页交互，忽略后续点击。
+    if (self.ameLoginTypeSelected) return;
+    self.ameLoginTypeSelected = YES;
+    // ★ [ACCT-DONE] 只锁【会触发登录的卡片本身】(cardStack),不再 self.view.userInteractionEnabled = NO ——
+    //   后者会把整页(含导航栏返回键)一起锁死,一旦宿主没消费选择就"进得去出不来"。
+    self.cardStack.userInteractionEnabled = NO;
+
     // 还原 tag 偏移（createLoginCardWithType 中存储时 +1）
     AccountLoginType type = (AccountLoginType)(card.tag - 1);
 
+    __weak typeof(self) weakSelf = self;
     // 轻微高亮反馈（FCL 风格）
     [UIView animateWithDuration:0.1 animations:^{
         card.alpha = 0.65;
@@ -294,11 +308,31 @@
         [UIView animateWithDuration:0.1 animations:^{
             card.alpha = 1.0;
         } completion:^(BOOL finished2) {
-            if (self.onSelectLoginType) {
-                self.onSelectLoginType(type);
+            if (weakSelf.onSelectLoginType) {
+                weakSelf.onSelectLoginType(type);
             }
+            // ★ [ACCT-DUP] 兜底解锁：若宿主未消费选择（不 pop 本页 / 回调为空），
+            //   0.8s 后恢复交互，避免页面卡死；已 pop（view 不在 window 上）则无需恢复。
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (strongSelf && strongSelf.view.window) {
+                    strongSelf.ameLoginTypeSelected = NO;
+                    strongSelf.view.userInteractionEnabled = YES;      // ★ [ACCT-DONE] 双保险(整页)
+                    strongSelf.cardStack.userInteractionEnabled = YES; // ★ [ACCT-DONE] 卡片栈
+                }
+            });
         }];
     }];
+}
+
+/// ★ [ACCT-DONE] 本页离开(被 pop / 被换走)时**无条件**复位选择锁与交互 —— 保证"选中一次
+///   没被宿主消费"也不会把页面(或下一次进入)留在锁死态。
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    self.ameLoginTypeSelected = NO;
+    self.view.userInteractionEnabled = YES;
+    self.cardStack.userInteractionEnabled = YES;
 }
 
 @end

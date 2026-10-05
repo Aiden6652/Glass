@@ -17,6 +17,10 @@
   <a href="./README.md">English</a> | <a href="./README_CN.md">Chinese</a>
 </p>
 
+> [!IMPORTANT]
+> **This is the one and only official Air repository:** [herbrine8403/Amethyst-iOS-MyRemastered](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered).
+> Beware of unofficial forks or mirror repositories using the "Air" name — always verify that the repository owner is [@herbrine8403](https://github.com/herbrine8403) and that the URL matches the link above.
+
 ---
 
 A premium Minecraft: Java Edition launcher for iOS and iPadOS, rebuilt from the ground up on the official Amethyst project. It delivers a refined mobile experience with comprehensive mod management, intelligent renderer selection, and deep platform integration.
@@ -128,6 +132,7 @@ JIT (Just-In-Time compilation) is essential for smooth gameplay. Choose the appr
 - [@LanRhyme](https://github.com/LanRhyme) -- ShardLauncher author; iOS 26 compatibility and logging improvements
 - [@WeiErLiTeo](https://github.com/WeiErLiTeo) -- Mod download integration, TouchController optimizations, and two-finger long-press keyboard trigger
 - [@Li2548](https://github.com/Li2548) -- Upstream synchronization
+- [@Gsjsjzhznsz](https://github.com/Gsjsjzhznsz) -- SDL3 presentation adaptations, Minecraft 26.3 black-screen (FBO0 heal blit) and resolution self-healing fixes, MobileGlues deadlock fix, Zink OpenGL bridge
 
 ## About Translations
 

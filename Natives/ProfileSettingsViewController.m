@@ -1,4 +1,6 @@
 #import "ProfileSettingsViewController.h"
+// ★ [GLASS-LIQUID] 材质统一走风格层(AmeGlassEffect):iOS≥26 ⇒ 系统 UIGlassEffect
+#import "UIKit+GlassSurface.h"
 #import "ModsManagerViewController.h"
 #import "ShadersManagerViewController.h"
 #import "ResourcePacksManagerViewController.h"
@@ -13,6 +15,7 @@
 #import "ios_uikit_bridge.h" // for showDialog
 #import "utils.h"
 #import "BackgroundManager.h"
+#import <objc/runtime.h>   // ★ [INST-SETTINGS] 组标题开关(关联对象记录 section)
 #import "DownloadTaskManager.h"
 #import "DownloadTaskItem.h"
 #import "PLTaskStages.h"
@@ -46,12 +49,18 @@
 @property (nonatomic, strong, nullable) UIView *heroCard;
 
 // 双列 tableView（横屏双列布局）
-// leftTableView：竖屏时显示所有 sections（0-4）；横屏时只显示 sections 0,1（版本信息、资源管理）
-// rightTableView：仅横屏时显示，显示 sections 2,3,4（组件安装、高级设置、服务器）
+// ★ [STALE-TITLE] 分组重排后（6 组）双列可见性同步更新，旧注释里的「0-4 / 高级设置」已不存在。
+// leftTableView：竖屏时显示所有 sections（0..5）；横屏时只显示 sections 0,1,2（版本信息 / 内存与性能 / Java 与启动参数）
+// rightTableView：仅横屏时显示，显示 sections 3,4,5（资源管理 / 组件安装 / 服务器）
 @property (nonatomic, strong, nullable) UITableView *leftTableView;
 @property (nonatomic, strong, nullable) UITableView *rightTableView;
 // Hero 卡片容器（包含 heroCard，作为 leftTableView 的 tableHeaderView）
 @property (nonatomic, strong, nullable) UIView *heroContainer;
+
+// ★ [INST-SETTINGS] 语义分组标题（与 self.sections 一一对应）
+@property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
+// ★ [INST-SETTINGS] 已收起的组（全局 section 索引）。仅内存态，不落任何偏好键。
+@property (nonatomic, strong) NSMutableIndexSet *ameCollapsedSections;
 
 @end
 
@@ -511,27 +520,45 @@ static NSString * localizeProfileTitle(NSString *title) {
 #pragma mark - Sections
 
 - (void)setupSections {
-    // 高级设置 section：渲染器 + 图形 API（仅 MC 26.2+）+ Java/内存/JVM
-    NSMutableArray *advancedRows = [NSMutableArray arrayWithArray:@[@"渲染器"]];
+    // ★ [INST-SETTINGS] 语义分组重排（6 组）：
+    //   0: 版本信息        - 名称 / 游戏版本 / 游戏目录
+    //   1: 内存与性能      - 内存分配 / 渲染器 / 图形 API(仅 MC 26.2+)
+    //   2: Java 与启动参数 - Java 版本 / JVM 启动参数 / 清除 JVM 参数
+    //   3: 资源管理        - 模组 / 光影 / 资源包 / 数据包 / 世界      [可展开]
+    //   4: 组件安装        - Fabric API / OptiFine                     [可展开]
+    //   5: 服务器          - 服务器地址
+    // 逻辑键（"渲染器"/"内存分配"…）保持原中文字面量不变 —— didSelect / cellForRow 的
+    // isEqualToString: 比较依赖它们；本改动只动「呈现与交互组织」。
+    NSMutableArray *runtimeRows = [NSMutableArray arrayWithArray:@[@"内存分配", @"渲染器"]];
     if ([self isCurrentProfileModernVersion]) {
-        [advancedRows addObject:@"图形 API"];
+        [runtimeRows addObject:@"图形 API"];
     }
-    [advancedRows addObjectsFromArray:@[@"Java版本", @"内存分配", @"JVM 启动参数", @"清除JVM参数"]];
 
-    // 重构（Air-Design v1.2）：5 个 Bento 分组
-    // 顺序与横屏布局对应：左侧（0,1）+ 右侧（2,3,4）
-    //   0: 版本信息  - 名称 / 游戏版本 / 游戏目录
-    //   1: 资源管理  - 模组 / 光影 / 资源包 / 数据包 / 世界
-    //   2: 组件安装  - Fabric API / OptiFine
-    //   3: 高级设置  - 渲染器 / 图形 API / Java / 内存 / JVM 参数
-    //   4: 服务器    - 服务器地址
     self.sections = @[
         @[@"名称", @"游戏版本", @"游戏目录"],
+        [runtimeRows copy],
+        @[@"Java版本", @"JVM 启动参数", @"清除JVM参数"],
         @[@"模组管理", @"光影管理", @"资源包管理", @"数据包管理", @"世界管理"],
         @[@"Fabric API", @"OptiFine"],
-        [advancedRows copy],
         @[localize(@"i18n_str_730", nil)]
     ];
+
+    // 组标题（复用既有 i18n 键；新增两个 preference.group.* 见 resources/*.lproj）
+    self.sectionTitles = @[
+        localize(@"i18n_str_289", nil),            // Version Info / 版本信息
+        localize(@"preference.group.runtime", nil),// Memory & Performance / 内存与性能
+        localize(@"preference.group.java", nil),   // Java & Launch Options / Java 与启动参数
+        localize(@"i18n_str_877", nil),            // Resource management / 资源管理
+        localize(@"i18n_str_878", nil),            // Component installation / 组件安装
+        localize(@"i18n_str_880", nil)             // Server / 服务器
+    ];
+
+    // 默认收起：子项多 / 用得少的两组（资源管理 5 项、组件安装 2 项）。
+    // ★ 只是呈现态，行数据仍在 self.sections 中；展开即见，不隐藏任何功能。
+    NSMutableIndexSet *collapsed = [NSMutableIndexSet indexSet];
+    [collapsed addIndex:3];
+    [collapsed addIndex:4];
+    self.ameCollapsedSections = collapsed;
 }
 
 #pragma mark - Dual Table View Helpers
@@ -542,18 +569,18 @@ static NSString * localizeProfileTitle(NSString *title) {
     return size.width > size.height;
 }
 
-/// 返回指定 tableView 显示的全局 section 索引数组
-/// - leftTableView：竖屏时显示所有 sections (0,1,2,3,4)；横屏时只显示 (0,1)
-/// - rightTableView：仅横屏时显示 (2,3,4)
+/// 返回指定 tableView 显示的全局 section 索引数组（★ [INST-SETTINGS] 6 组）
+/// - leftTableView：竖屏时显示所有 sections (0..5)；横屏时只显示 (0,1,2)
+/// - rightTableView：仅横屏时显示 (3,4,5)
 - (NSArray<NSNumber *> *)visibleSectionsForTableView:(UITableView *)tableView {
     if (tableView == self.rightTableView) {
-        return @[@2, @3, @4];
+        return @[@3, @4, @5];
     }
     // leftTableView
     if ([self isLandscape]) {
-        return @[@0, @1];
+        return @[@0, @1, @2];
     }
-    return @[@0, @1, @2, @3, @4];
+    return @[@0, @1, @2, @3, @4, @5];
 }
 
 /// 将 tableView 的本地 section 索引转换为全局 section 索引
@@ -653,30 +680,135 @@ static NSString * localizeProfileTitle(NSString *title) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     NSInteger globalSection = [self globalSectionForTableView:tableView localSection:section];
     if (globalSection < 0 || globalSection >= (NSInteger)self.sections.count) return 0;
+    // ★ [INST-SETTINGS] 收起态该组返回 0 行（展开/收起由 reloadSections 带动画切换）
+    if ([self.ameCollapsedSections containsIndex:globalSection]) return 0;
     return [self.sections[globalSection] count];
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+// ★ [INST-SETTINGS] 组标题行统一高度 —— 让组与组之间有稳定的间距与层次
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    return 36.0;
+}
+
+/// ★ [INST-SETTINGS] 自绘组标题：标题 + 展开/收起 chevron，整行可点。
+/// 仅换呈现载体，分组数据仍来自 self.sectionTitles / self.sections。
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSInteger globalSection = [self globalSectionForTableView:tableView localSection:section];
-    switch (globalSection) {
-        case 0: return localize(@"i18n_str_289", nil);
-        case 1: return localize(@"i18n_str_877", nil);
-        case 2: return localize(@"i18n_str_878", nil);
-        case 3: return localize(@"i18n_str_879", nil);
-        case 4: return localize(@"i18n_str_880", nil);
-        default: return nil;
+    if (globalSection < 0 || globalSection >= (NSInteger)self.sectionTitles.count) return nil;
+
+    static NSString *kAmeInstHeaderId = @"AMEInstSectionHeader";
+    UITableViewHeaderFooterView *header = [tableView dequeueReusableHeaderFooterViewWithIdentifier:kAmeInstHeaderId];
+    if (!header) {
+        header = [[UITableViewHeaderFooterView alloc] initWithReuseIdentifier:kAmeInstHeaderId];
+
+        UILabel *title = [[UILabel alloc] init];
+        title.tag = 7401;
+        title.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+        title.textColor = [UIColor secondaryLabelColor];
+        title.adjustsFontSizeToFitWidth = YES;
+        title.minimumScaleFactor = 0.8;
+        title.translatesAutoresizingMaskIntoConstraints = NO;
+        [header.contentView addSubview:title];
+
+        UIImageView *chev = [[UIImageView alloc] init];
+        chev.tag = 7402;
+        chev.image = [UIImage systemImageNamed:@"chevron.down"];
+        chev.tintColor = [UIColor tertiaryLabelColor];
+        chev.contentMode = UIViewContentModeScaleAspectFit;
+        chev.translatesAutoresizingMaskIntoConstraints = NO;
+        [header.contentView addSubview:chev];
+
+        UIButton *hit = [UIButton buttonWithType:UIButtonTypeCustom];
+        hit.tag = 7400;
+        hit.translatesAutoresizingMaskIntoConstraints = NO;
+        [hit addTarget:self action:@selector(ameSectionHeaderTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [header.contentView addSubview:hit];
+
+        UILayoutGuide *m = header.contentView.layoutMarginsGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [title.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+            [title.centerYAnchor constraintEqualToAnchor:header.contentView.centerYAnchor],
+            [title.trailingAnchor constraintLessThanOrEqualToAnchor:chev.leadingAnchor constant:-8],
+            [chev.widthAnchor constraintEqualToConstant:14],
+            [chev.heightAnchor constraintEqualToConstant:14],
+            [chev.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+            [chev.centerYAnchor constraintEqualToAnchor:header.contentView.centerYAnchor],
+            [hit.leadingAnchor constraintEqualToAnchor:header.contentView.leadingAnchor],
+            [hit.trailingAnchor constraintEqualToAnchor:header.contentView.trailingAnchor],
+            [hit.topAnchor constraintEqualToAnchor:header.contentView.topAnchor],
+            [hit.bottomAnchor constraintEqualToAnchor:header.contentView.bottomAnchor],
+        ]];
+    }
+
+    UILabel *title = [header.contentView viewWithTag:7401];
+    title.text = self.sectionTitles[globalSection];
+
+    BOOL collapsed = [self.ameCollapsedSections containsIndex:globalSection];
+    UIImageView *chev = [header.contentView viewWithTag:7402];
+    chev.image = [UIImage systemImageNamed:(collapsed ? @"chevron.right" : @"chevron.down")];
+    chev.tintColor = collapsed ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
+
+    // 关联对象记录本 header 代表的全局 section（header 会被复用）
+    objc_setAssociatedObject(header, @selector(ameSectionHeaderTapped:),
+                             @(globalSection), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return header;
+}
+
+/// ★ [INST-SETTINGS] 点击组标题 ⇒ 展开/收起该组（带系统动画，不跳帧）
+- (void)ameSectionHeaderTapped:(UIButton *)sender {
+    UIView *v = sender;
+    while (v && ![v isKindOfClass:[UITableViewHeaderFooterView class]]) v = v.superview;
+    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)v;
+    if (!header) return;
+    NSNumber *sec = objc_getAssociatedObject(header, @selector(ameSectionHeaderTapped:));
+    if (!sec) return;
+    NSInteger globalSection = sec.integerValue;
+    BOOL collapsed = [self.ameCollapsedSections containsIndex:globalSection];
+    [self ameSetSection:globalSection collapsed:!collapsed];
+}
+
+/// ★ [INST-SETTINGS] 设置某组展开/收起。仅改内存态 + reloadSections 动画，不触碰任何偏好。
+- (void)ameSetSection:(NSInteger)globalSection collapsed:(BOOL)collapsed {
+    BOOL nowCollapsed = [self.ameCollapsedSections containsIndex:globalSection];
+    if (nowCollapsed == collapsed) return;
+    if (collapsed) [self.ameCollapsedSections addIndex:globalSection];
+    else           [self.ameCollapsedSections removeIndex:globalSection];
+
+    for (UITableView *tv in @[self.leftTableView, self.rightTableView]) {
+        if (!tv || tv.hidden) continue;
+        NSArray<NSNumber *> *visible = [self visibleSectionsForTableView:tv];
+        NSInteger local = [visible indexOfObject:@(globalSection)];
+        if (local == NSNotFound) continue;
+        [tv beginUpdates];
+        [tv reloadSections:[NSIndexSet indexSetWithIndex:local]
+         withRowAnimation:UITableViewRowAnimationAutomatic];
+        [tv endUpdates];
+        // reloadSections 不一定重建 header ⇒ 手动同步 chevron 朝向（状态不丢）
+        UITableViewHeaderFooterView *header = [tv headerViewForSection:local];
+        UIImageView *chev = [header.contentView viewWithTag:7402];
+        if (chev) {
+            chev.image = [UIImage systemImageNamed:(collapsed ? @"chevron.right" : @"chevron.down")];
+            chev.tintColor = collapsed ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
+        }
     }
 }
 
+// ★ [STALE-TITLE] 旧标题源已删。原先本类同时实现 titleForHeaderInSection:（返回 self.sectionTitles）
+// 与自绘的 viewForHeaderInSection:。UITableView 会拿 titleForHeaderInSection: 的字符串去填充返回的
+// UITableViewHeaderFooterView 的内建 textLabel ⇒ 与自绘标题叠成两份（同一组标题出现两次）。
+// 现标题只由下方自绘 header 单独提供；heightForHeaderInSection: 已给足高度 ⇒ 删除本方法，
+// 让每组标题在全页只出现一次。
+
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     NSInteger globalSection = [self globalSectionForTableView:tableView localSection:section];
+    // ★ [INST-SETTINGS] 分组重排后：0=版本信息 / 4=组件安装 / 5=服务器
     if (globalSection == 0) {
         return localize(@"i18n_str_881", nil);
     }
-    if (globalSection == 2) {
+    if (globalSection == 4) {
         return localize(@"i18n_str_882", nil);
     }
-    if (globalSection == 4) {
+    if (globalSection == 5) {
         return localize(@"i18n_str_883", nil);
     }
     return nil;
@@ -706,25 +838,62 @@ static NSString * localizeProfileTitle(NSString *title) {
     NSString *title = self.sections[globalSection][indexPath.row];
     cell.textLabel.text = localizeProfileTitle(title);
 
+    // ★ [INST-SETTINGS] 统一「行范式」：图标 + 标题 + 右侧当前值(detail) + chevron。
+    // 内联输入框全部撤掉 ⇒ 需要输入/选择的项改为点整行弹窗（didSelect 里分发），
+    // 行与行因此不再挤在一个格子里（呈现与交互组织变化，写入路径不变）。
     switch (globalSection) {
-        case 0: // 版本信息
+        case 0: // ★ 版本信息
             if ([title isEqualToString:@"名称"]) {
                 cell.imageView.image = [UIImage systemImageNamed:@"tag"];
-                cell.accessoryView = [self buildNameTextField];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.detailTextLabel.text = self.profile[@"name"] ?: self.originalName;
             } else if ([title isEqualToString:@"游戏版本"]) {
                 cell.imageView.image = [UIImage systemImageNamed:@"archivebox"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                // 版本选择器(弹出式 inputView)仍是承载控件；点整行 ⇒ becomeFirstResponder 弹起
                 cell.accessoryView = [self buildVersionTextField];
                 cell.detailTextLabel.text = nil;
             } else if ([title isEqualToString:@"游戏目录"]) {
                 cell.imageView.image = [UIImage systemImageNamed:@"folder"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                NSString *gameDir = self.profile[@"gameDir"] ?: @".";
-                cell.detailTextLabel.text = gameDir;
+                cell.detailTextLabel.text = self.profile[@"gameDir"] ?: @".";
             }
             break;
 
-        case 1: // 资源管理
+        case 1: // ★ 内存与性能
+            if ([title isEqualToString:@"内存分配"]) {
+                cell.imageView.image = [UIImage systemImageNamed:@"memorychip"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld MB / %ld MB", (long)self.allocatedMemory, (long)self.maxMemory];
+            } else if ([title isEqualToString:@"渲染器"]) {
+                cell.imageView.image = [UIImage systemImageNamed:@"cpu"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.detailTextLabel.text = [self rendererDisplayName:self.selectedRenderer];
+            } else if ([title isEqualToString:@"图形 API"]) {
+                cell.imageView.image = [UIImage systemImageNamed:@"rectangle.dashed"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.detailTextLabel.text = [self graphicsApiDisplayName:self.selectedGraphicsApi];
+            }
+            break;
+
+        case 2: // ★ Java 与启动参数
+            if ([title isEqualToString:@"Java版本"]) {
+                cell.imageView.image = [UIImage systemImageNamed:@"j.square"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.detailTextLabel.text = [self.selectedJavaVersion isEqualToString:@"0"] ? localize(@"preference.auto", nil) : [NSString stringWithFormat:@"Java %@", self.selectedJavaVersion];
+            } else if ([title isEqualToString:@"JVM 启动参数"]) {
+                cell.imageView.image = [UIImage systemImageNamed:@"slider.vertical.3"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.detailTextLabel.text = self.javaArgs.length > 0 ? self.javaArgs : @"(default)";
+            } else if ([title isEqualToString:@"清除JVM参数"]) {
+                cell.imageView.image = [UIImage systemImageNamed:@"trash"];
+                cell.imageView.tintColor = [UIColor systemRedColor];
+                cell.textLabel.textColor = [UIColor systemRedColor];
+                cell.detailTextLabel.text = self.javaArgs.length > 0 ? localize(@"i18n_str_2044", nil) : localize(@"i18n_str_889", nil);
+            }
+            break;
+
+        case 3: // ★ 资源管理
             if ([title isEqualToString:@"模组管理"]) {
                 cell.imageView.image = [UIImage systemImageNamed:@"puzzlepiece.fill"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -743,7 +912,7 @@ static NSString * localizeProfileTitle(NSString *title) {
             }
             break;
 
-        case 2: // 组件安装
+        case 4: // ★ 组件安装
             if ([title isEqualToString:@"Fabric API"]) {
                 cell.imageView.image = [UIImage systemImageNamed:@"bolt.fill"];
                 cell.imageView.tintColor = [UIColor systemOrangeColor];
@@ -757,38 +926,10 @@ static NSString * localizeProfileTitle(NSString *title) {
             }
             break;
 
-        case 3: // 高级设置
-            if ([title isEqualToString:@"渲染器"]) {
-                cell.imageView.image = [UIImage systemImageNamed:@"cpu"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.detailTextLabel.text = [self rendererDisplayName:self.selectedRenderer];
-            } else if ([title isEqualToString:@"图形 API"]) {
-                cell.imageView.image = [UIImage systemImageNamed:@"rectangle.dashed"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.detailTextLabel.text = [self graphicsApiDisplayName:self.selectedGraphicsApi];
-            } else if ([title isEqualToString:@"Java版本"]) {
-                cell.imageView.image = [UIImage systemImageNamed:@"j.square"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.detailTextLabel.text = [self.selectedJavaVersion isEqualToString:@"0"] ? localize(@"preference.auto", nil) : [NSString stringWithFormat:@"Java %@", self.selectedJavaVersion];
-            } else if ([title isEqualToString:@"内存分配"]) {
-                cell.imageView.image = [UIImage systemImageNamed:@"memorychip"];
-                cell.accessoryType = UITableViewCellAccessoryNone;
-                cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld MB / %ld MB", (long)self.allocatedMemory, (long)self.maxMemory];
-            } else if ([title isEqualToString:@"JVM 启动参数"]) {
-                cell.imageView.image = [UIImage systemImageNamed:@"slider.vertical.3"];
-                cell.accessoryView = [self buildJavaArgsTextField];
-                cell.detailTextLabel.text = nil;
-            } else if ([title isEqualToString:@"清除JVM参数"]) {
-                cell.imageView.image = [UIImage systemImageNamed:@"trash"];
-                cell.imageView.tintColor = [UIColor systemRedColor];
-                cell.textLabel.textColor = [UIColor systemRedColor];
-                cell.detailTextLabel.text = self.javaArgs.length > 0 ? localize(@"i18n_str_2044", nil) : localize(@"i18n_str_889", nil);
-            }
-            break;
-
-        case 4: // 服务器地址（FCL 风格）
+        case 5: // ★ 服务器（弹出式输入）
             cell.imageView.image = [UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"];
-            cell.accessoryView = [self buildServerIpTextField];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.detailTextLabel.text = self.serverIp.length > 0 ? self.serverIp : @"";
             break;
     }
 
@@ -1119,20 +1260,39 @@ static NSString * localizeProfileTitle(NSString *title) {
 
     NSString *title = self.sections[globalSection][indexPath.row];
 
+    // ★ [INST-SETTINGS] 点整行分发；「需要输入/选择」的项一律弹出式（与组内其它项一致）。
     switch (globalSection) {
-        case 0: // 版本信息
+        case 0: // ★ 版本信息
             if ([title isEqualToString:@"名称"]) {
-                // 聚焦名称输入框
-                if (self.nameTextField) [self.nameTextField becomeFirstResponder];
+                [self ameEditProfileName];                     // 弹出式文本输入
             } else if ([title isEqualToString:@"游戏版本"]) {
-                // 聚焦版本选择器
-                if (self.versionTextField) [self.versionTextField becomeFirstResponder];
+                if (self.versionTextField) [self.versionTextField becomeFirstResponder];  // 弹出式 picker
             } else if ([title isEqualToString:@"游戏目录"]) {
-                [self editGameDir];
+                [self editGameDir];                            // 既有弹出式文本输入
             }
             break;
 
-        case 1: // 资源管理
+        case 1: // ★ 内存与性能
+            if ([title isEqualToString:@"内存分配"]) {
+                [self showMemoryAllocator];                    // 弹出式选择
+            } else if ([title isEqualToString:@"渲染器"]) {
+                [self showRendererSelector];                   // 弹出式选择
+            } else if ([title isEqualToString:@"图形 API"]) {
+                [self showGraphicsApiSelector];                // 弹出式选择
+            }
+            break;
+
+        case 2: // ★ Java 与启动参数
+            if ([title isEqualToString:@"Java版本"]) {
+                [self showJavaVersionSelector];                // 弹出式选择
+            } else if ([title isEqualToString:@"JVM 启动参数"]) {
+                [self ameEditJavaArgs];                        // 弹出式文本输入
+            } else if ([title isEqualToString:@"清除JVM参数"]) {
+                [self clearJavaArgs];                          // 弹出式确认
+            }
+            break;
+
+        case 3: // ★ 资源管理
             if ([title isEqualToString:@"模组管理"]) {
                 [self openModsManager];
             } else if ([title isEqualToString:@"光影管理"]) {
@@ -1146,7 +1306,7 @@ static NSString * localizeProfileTitle(NSString *title) {
             }
             break;
 
-        case 2: // 组件安装
+        case 4: // ★ 组件安装
             if ([title isEqualToString:@"Fabric API"]) {
                 [self installFabricAPIStandalone];
             } else if ([title isEqualToString:@"OptiFine"]) {
@@ -1154,26 +1314,100 @@ static NSString * localizeProfileTitle(NSString *title) {
             }
             break;
 
-        case 3: // 高级设置
-            if ([title isEqualToString:@"渲染器"]) {
-                [self showRendererSelector];
-            } else if ([title isEqualToString:@"图形 API"]) {
-                [self showGraphicsApiSelector];
-            } else if ([title isEqualToString:@"Java版本"]) {
-                [self showJavaVersionSelector];
-            } else if ([title isEqualToString:@"内存分配"]) {
-                [self showMemoryAllocator];
-            } else if ([title isEqualToString:@"JVM 启动参数"]) {
-                if (self.javaArgsTextField) [self.javaArgsTextField becomeFirstResponder];
-            } else if ([title isEqualToString:@"清除JVM参数"]) {
-                [self clearJavaArgs];
-            }
-            break;
-
-        case 4: // 服务器地址
-            [self focusTextFieldInCellAtIndexPath:indexPath inTableView:tableView];
+        case 5: // ★ 服务器
+            [self ameEditServerIp];                            // 弹出式文本输入
             break;
     }
+}
+
+#pragma mark - ★ [INST-SETTINGS] 弹出式输入
+
+/// 统一的弹出式文本输入：点「取消」不改任何值（满足「不改值也能取消」）。
+- (void)amePromptTextInputWithTitle:(NSString *)title
+                            message:(NSString *)message
+                        placeholder:(NSString *)placeholder
+                        initialText:(NSString *)initialText
+                           keyboard:(UIKeyboardType)keyboard
+                           onCommit:(void (^)(NSString *text))onCommit {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.text = initialText ?: @"";
+        tf.placeholder = placeholder;
+        tf.autocorrectionType = UITextAutocorrectionTypeNo;
+        tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        tf.clearButtonMode = UITextFieldViewModeWhileEditing;
+        tf.returnKeyType = UIReturnKeyDone;
+        tf.keyboardType = keyboard;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil)
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    __weak UIAlertController *weakAlert = alert;   // ★ [INST-SETTINGS] 断开 alert→action→block→alert 循环
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_44", nil)
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        if (!onCommit) return;
+        UITextField *tf = weakAlert.textFields.firstObject;
+        onCommit(tf.text ?: @"");
+    }]];
+    if (alert.popoverPresentationController) {
+        alert.popoverPresentationController.sourceView = self.view;
+        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2.0,
+                                                                    self.view.bounds.size.height / 2.0, 1, 1);
+    }
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+/// ★ [INST-SETTINGS] 名称：内联输入框 ⇒ 弹出式输入框（键/写入路径不变：profile[@"name"]）
+- (void)ameEditProfileName {
+    NSString *current = self.profile[@"name"] ?: self.originalName ?: @"";
+    [self amePromptTextInputWithTitle:localize(@"preference.profile.title.name", nil)
+                              message:nil
+                          placeholder:localize(@"i18n_str_890", nil)
+                          initialText:current
+                             keyboard:UIKeyboardTypeDefault
+                             onCommit:^(NSString *text) {
+        NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (trimmed.length == 0) trimmed = self.originalName ?: current;   // 空名恢复原名
+        self.profile[@"name"] = trimmed ?: @"";
+        [self updateHeroCard];
+        [self reloadAllTableViews];
+    }];
+}
+
+/// ★ [INST-SETTINGS] JVM 启动参数：内联输入框 ⇒ 弹出式输入框（写入路径不变）
+- (void)ameEditJavaArgs {
+    [self amePromptTextInputWithTitle:localize(@"preference.title.java_args", nil)
+                              message:nil
+                          placeholder:@"(default)"
+                          initialText:(self.javaArgs.length > 0 ? self.javaArgs : @"")
+                             keyboard:UIKeyboardTypeDefault
+                             onCommit:^(NSString *text) {
+        NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (trimmed.length == 0 || [trimmed isEqualToString:@"(default)"]) {
+            self.javaArgs = @"";
+        } else {
+            self.javaArgs = trimmed;
+        }
+        [self saveSettings];
+        [self reloadAllTableViews];
+    }];
+}
+
+/// ★ [INST-SETTINGS] 服务器地址：内联输入框 ⇒ 弹出式输入框（写入路径不变：saveSettings）
+- (void)ameEditServerIp {
+    [self amePromptTextInputWithTitle:localize(@"i18n_str_730", nil)
+                              message:localize(@"i18n_str_893", nil)
+                          placeholder:localize(@"i18n_str_893", nil)
+                          initialText:self.serverIp
+                             keyboard:UIKeyboardTypeURL
+                             onCommit:^(NSString *text) {
+        self.serverIp = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+        [self saveSettings];
+        [self reloadAllTableViews];
+    }];
 }
 
 - (void)focusTextFieldInCellAtIndexPath:(NSIndexPath *)indexPath inTableView:(UITableView *)tableView {
@@ -1765,7 +1999,7 @@ static NSString * localizeProfileTitle(NSString *title) {
 /// 参照 FCL OptiFineInstallTask 与 HMCL OptiFineInstallTask：
 ///   1. 下载 OptiFine jar 到 libraries/optifine/OptiFine/<mcVersion>/<versionId>.jar
 ///   2. 创建 versions/<versionId>/<versionId>.json，mainClass 设为
-///      net.minecraft.launchwrapper.Launcher，并附加 --tweakClass optifine.OptiFineTweaker
+///      net.minecraft.launchwrapper.Launch（launchwrapper 入口类），并附加 --tweakClass optifine.OptiFineTweaker
 ///   3. inheritsFrom 指向原版版本（vanilla parent 必须已存在）
 ///   4. 创建新 profile 并切换为当前 profile
 - (void)startInstallOptiFineAsPatch:(NSString *)gameVersion {
@@ -1890,7 +2124,7 @@ static NSString * localizeProfileTitle(NSString *title) {
 
         // 4. 写入 jar 到 libraries/optifine/OptiFine/<mcVersion>/<versionId>.jar
         //    参照 FCL/HMCL：OptiFine jar 作为 launchwrapper 的 tweakClass 输入，
-        //    mainClass 设为 net.minecraft.launchwrapper.Launcher
+        //    mainClass 设为 net.minecraft.launchwrapper.Launch
         NSString *versionId = [NSString stringWithFormat:@"%@-OptiFine_%@_%@", gameVersion, optiFineType, optiFinePatch];
         NSString *optifineJarPath = [NSString stringWithFormat:@"optifine/OptiFine/%@/%@.jar", gameVersion, versionId];
         NSString *optifineJarAbsPath = [NSString stringWithFormat:@"%@/libraries/%@", gameDir, optifineJarPath];
@@ -1912,25 +2146,44 @@ static NSString * localizeProfileTitle(NSString *title) {
         }
 
         // 5. 创建 version JSON（launchwrapper + tweakClass + inheritsFrom）
+        // 参照 ZL2 Install.OptiFine：
+        //   - mainClass 必须是 net.minecraft.launchwrapper.Launch（launchwrapper 中可执行 main 的类；
+        //     net.minecraft.launchwrapper.Launcher 并不存在，会导致 "Could not find or load main class"）
+        //   - libraries 必须包含 launchwrapper：OptiFine 1.13+ 使用安装包内嵌的 launchwrapper-of，
+        //     旧版使用 net.minecraft:launchwrapper:1.12，否则启动时报 ClassNotFoundException
+        NSString *librariesDir = [gameDir stringByAppendingPathComponent:@"libraries"];
+        NSArray *launchWrapperLibraries = [MinecraftResourceUtils optifineLaunchWrapperLibrariesWithOptiFineJarPath:optifineJarAbsPath
+                                                                                                         librariesDir:librariesDir];
+        if (!launchWrapperLibraries) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf2 = weakSelf;
+                if (!strongSelf2) return;
+                NSError *failError = [NSError errorWithDomain:@"OptiFine" code:6 userInfo:@{NSLocalizedDescriptionKey: localize(@"i18n_str_97", nil)}];
+                [[DownloadTaskManager sharedManager] updateTaskWithId:taskId stageAtIndex:0 status:PLTaskStageStatusFailed];
+                [[DownloadTaskManager sharedManager] updateTaskWithId:taskId error:failError];
+                [[DownloadTaskManager sharedManager] setTaskWithId:taskId state:DownloadTaskStateFailed];
+                [strongSelf2 showComponentAlert:localize(@"i18n_str_918", nil) message:failError.localizedDescription];
+            });
+            return;
+        }
+        NSArray *optifineLibraries = [launchWrapperLibraries arrayByAddingObject:@{
+            @"name": [NSString stringWithFormat:@"optifine:OptiFine:%@", versionId],
+            @"downloads": @{
+                @"artifact": @{
+                    @"path": optifineJarPath,
+                    @"url": @"",
+                    @"size": @(jarData.length),
+                    @"sha1": @""
+                }
+            }
+        }];
         NSDictionary *versionJson = @{
             @"id": versionId,
             @"inheritsFrom": gameVersion,
             @"type": @"release",
-            @"mainClass": @"net.minecraft.launchwrapper.Launcher",
+            @"mainClass": @"net.minecraft.launchwrapper.Launch",
             @"minecraftArguments": @"--username ${auth_player_name} --version ${version_name} --gameDir ${game_directory} --assetsDir ${assets_root} --assetIndex ${assets_index_name} --uuid ${auth_uuid} --accessToken ${auth_access_token} --userType ${user_type} --versionType ${version_type} --tweakClass optifine.OptiFineTweaker",
-            @"libraries": @[
-                @{
-                    @"name": [NSString stringWithFormat:@"optifine:OptiFine:%@", gameVersion],
-                    @"downloads": @{
-                        @"artifact": @{
-                            @"path": optifineJarPath,
-                            @"url": @"",
-                            @"size": @(jarData.length),
-                            @"sha1": @""
-                        }
-                    }
-                }
-            ],
+            @"libraries": optifineLibraries,
             @"jar": gameVersion,
             @"minimumLauncherVersion": @21
         };
@@ -2006,7 +2259,7 @@ static NSString * localizeProfileTitle(NSString *title) {
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
 
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        UITableViewCell *cell = [self cellForGlobalSection:3 row:0];
+        UITableViewCell *cell = [self cellForGlobalSection:1 row:1];   // ★ [INST-SETTINGS] 渲染器 → 内存与性能组
         alert.popoverPresentationController.sourceView = cell ?: self.view;
         alert.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
     }
@@ -2068,7 +2321,7 @@ static NSString * localizeProfileTitle(NSString *title) {
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
 
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        UITableViewCell *cell = [self cellForGlobalSection:3 row:1];
+        UITableViewCell *cell = [self cellForGlobalSection:1 row:2];   // ★ [INST-SETTINGS] 图形 API
         alert.popoverPresentationController.sourceView = cell ?: self.view;
         alert.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
     }
@@ -2107,7 +2360,7 @@ static NSString * localizeProfileTitle(NSString *title) {
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
 
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        UITableViewCell *cell = [self cellForGlobalSection:3 row:1];
+        UITableViewCell *cell = [self cellForGlobalSection:2 row:0];   // ★ [INST-SETTINGS] Java 版本
         alert.popoverPresentationController.sourceView = cell ?: self.view;
         alert.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
     }
@@ -2142,7 +2395,7 @@ static NSString * localizeProfileTitle(NSString *title) {
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
 
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        UITableViewCell *cell = [self cellForGlobalSection:3 row:2];
+        UITableViewCell *cell = [self cellForGlobalSection:1 row:0];   // ★ [INST-SETTINGS] 内存分配
         alert.popoverPresentationController.sourceView = cell ?: self.view;
         alert.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
     }
@@ -2216,7 +2469,14 @@ static NSString * localizeProfileTitle(NSString *title) {
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskLandscape;
+    // ★ [PAGE-ADAPT] 与全 App 一致放开竖屏(同 LauncherRootViewController / LauncherCardLayout /
+    //   VersionManager 的 [PORTRAIT] 口径)。本页 layoutDualTableViews 本就写了「竖屏单列 /
+    //   横屏双列」两套布局 ⇒ 竖屏是设计内形态;原先写死 Landscape 会让本页以模态/根形式出现时
+    //   把 App 钉在横屏(与已修的同族页面同型)。
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    return UIInterfaceOrientationMaskAllButUpsideDown;
 }
 
 - (void)handleBackgroundUIEffectChanged:(NSNotification *)notification {
@@ -2243,9 +2503,10 @@ static NSString * localizeProfileTitle(NSString *title) {
             // 有自定义背景：使用毛玻璃 backgroundView 模糊背景并遮挡栈底 VC
             UIBlurEffect *blur;
             if (@available(iOS 13.0, *)) {
-                blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+                // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect
+                blur = (UIBlurEffect *)AmeGlassEffect(UIBlurEffectStyleSystemThinMaterial);
             } else {
-                blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+                blur = (UIBlurEffect *)AmeGlassEffect(UIBlurEffectStyleLight);
             }
             UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
             blurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;

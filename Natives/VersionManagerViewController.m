@@ -1,4 +1,6 @@
 #import "VersionManagerViewController.h"
+// ★ [GLASS-LIQUID] 材质统一走风格层(AmeGlassEffect):iOS≥26 ⇒ 系统 UIGlassEffect
+#import "UIKit+GlassSurface.h"
 #import "BackgroundManager.h"
 #import "PLProfiles.h"
 #import "ProfileSettingsViewController.h"
@@ -56,6 +58,14 @@ static NSInteger const kSectionVersions    = 1;
     self.contentContainer.layer.cornerRadius = 12;
     self.contentContainer.layer.cornerCurve = kCACornerCurveContinuous;
     self.contentContainer.layer.masksToBounds = YES;
+    // ★ [CORNER-FIX] 圆角裁剪必须【同时】落在 contentView 这一层:
+    //   BackgroundManager.applyEffectToCollectionViewCell: 注入的材质层是按 contentView 的圆角
+    //   铺满整个 cell 的;只把圆角挂在内层 contentContainer 上时 contentView 圆角为 0
+    //   ⇒ 材质(material)是一整块直角矩形,在卡片圆角外沿露出一圈方角
+    //   (用户实测:「长方形的尖尖角没有消掉」)。外阴影仍留在外层 cell(masksToBounds=NO)。
+    self.contentView.layer.cornerRadius = 12;
+    self.contentView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 与系统卡片一致
+    self.contentView.layer.masksToBounds = YES;
     // 规范 6.2：第 1 层浅色半透明基底
     self.contentContainer.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
     // 规范 5.3：默认卡片描边 0.5pt 白 0.10
@@ -583,7 +593,8 @@ static NSInteger const kSectionVersions    = 1;
     self = [super initWithFrame:frame];
     if (self) {
         // 规范 6.2：SystemMaterial 自动适配亮/暗模式（替代原 SystemMaterialDark）
-        UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+        // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect(不再直接 UIBlurEffect)
+        UIVisualEffect *blurEffect = AmeGlassEffect(UIBlurEffectStyleSystemMaterial);
         self.blurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
         self.blurView.translatesAutoresizingMaskIntoConstraints = NO;
         [self addSubview:self.blurView];
@@ -847,7 +858,18 @@ static NSInteger const kSectionVersions    = 1;
 }
 
 - (void)createNewVersion {
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"ShowDownloadPage" object:nil];
+    // ★ [TABFIX] 旧行为:发 ShowDownloadPage 通知,让 LauncherRootViewController 换自己的内容。
+    //   但本页现在是【独立标签】,那个通知是在用户看不见的主页里换内容 ——
+    //   表现就是「点 + 没反应」+「切回主页发现变成实例下载页」(用户实测)。
+    //   正解:直接切到"下载"标签(它本来就是 DownloadViewController)。
+    UITabBarController *tbc = self.tabBarController;
+    if (tbc) {
+        NSLog(@"[TABFIX] '+' ⇒ 切到下载标签(index 1)");
+        tbc.selectedIndex = 1;
+    } else {
+        // 兜底:不在标签栏里(老流程)时保持原行为
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ShowDownloadPage" object:nil];
+    }
 }
 
 #pragma mark - Empty State
@@ -1626,6 +1648,23 @@ static NSInteger const kSectionVersions    = 1;
     }
     profile[@"graphicsApi"] = key;
     profiles[self.selectedProfile] = profile;
+
+    // 同时写入 PLProfiles 当前选中的 profile。
+    // JavaLauncher 启动时读的是 PLProfiles.current.selectedProfile，而本界面允许
+    // 浏览并修改非当前选中的 profile。两者不一致时（用户在此切换了 profile 但未
+    // 将其设为当前），只写 self.selectedProfile 会让启动侧读不到，表现为
+    // 「更改渲染 API 无效」。这里补写一份，消除该不一致。
+    NSString *curName = PLProfiles.current.selectedProfileName;
+    if (curName.length > 0 && ![curName isEqualToString:self.selectedProfile]) {
+        NSMutableDictionary *curProfile = [profiles[curName] mutableCopy];
+        if (!curProfile) {
+            curProfile = [NSMutableDictionary dictionary];
+        }
+        curProfile[@"graphicsApi"] = key;
+        profiles[curName] = curProfile;
+        NSLog(@"[VersionMgr] Graphics API mirrored to current profile '%@'", curName);
+    }
+
     [PLProfiles.current save];
 
     // 同步到全局偏好

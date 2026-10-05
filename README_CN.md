@@ -17,6 +17,10 @@
   <a href="./README.md">English</a> | <a href="./README_CN.md">Chinese</a>
 </p>
 
+> [!IMPORTANT]
+> **本仓库是 Air 唯一官方仓库：** [herbrine8403/Amethyst-iOS-MyRemastered](https://github.com/herbrine8403/Amethyst-iOS-MyRemastered)。
+> 请警惕使用 "Air" 名称的非官方 fork 或镜像仓库——请认准仓库所有者 [@herbrine8403](https://github.com/herbrine8403)，并核对网址是否为上方链接。
+
 ---
 
 一款面向 iOS 和 iPadOS 平台的 Minecraft: Java Edition 高端启动器，基于官方 Amethyst 项目深度重构。提供了精致的移动端体验，集成了全面的 Mod 管理、智能渲染器选择以及深度的平台适配能力。
@@ -126,6 +130,7 @@ JIT（即时编译）是流畅运行游戏的关键。请根据自身环境选�
 - [@LanRhyme](https://github.com/LanRhyme) -- iOS 26 兼容性适配及日志改进
 - [@WeiErLiTeo](https://github.com/WeiErLiTeo) -- Mod 下载功能集成、TouchController 优化、双指长按唤出键盘
 - [@Li2548](https://github.com/Li2548) -- 上游同步维护
+- [@Gsjsjzhznsz](https://github.com/Gsjsjzhznsz) -- SDL3 呈现链适配、Minecraft 26.3 黑屏（FBO0 自愈 blit）与分辨率自愈修复、MobileGlues 死锁修复、Zink OpenGL 桥接
 
 ## 第三方组件
 

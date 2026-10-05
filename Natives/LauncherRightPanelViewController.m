@@ -18,11 +18,16 @@
 #import "ios_uikit_bridge.h"
 #import "utils.h"
 #import "AvatarManager.h"
-#import "SkinCacheManager.h"
 #import "ImageCropperViewController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <sys/time.h>
+
+// ★ [NORIGHT] 右栏卡片下线:下面三个通知是「新 UI 入口 ⇄ 右栏原实现」的唯一接线。
+//   新 UI 只 post 动作名;右栏在 norightHandleAction: 里调用**自己原来的方法**,零复制逻辑。
+NSString * const AmeRightPanelActionNotification       = @"AmeRightPanelAction";        // 新入口 → 右栏原方法
+NSString * const AmeRightPanelStateNotification        = @"AmeRightPanelState";         // 右栏 → 外部(版本/JIT/启动键文案)
+NSString * const AmeRightPanelRequestStateNotification = @"AmeRightPanelRequestState";  // 外部 → 右栏(索取一次状态)
 
 // 添加 C 函数声明 - 这些函数在 LauncherPreferences.m 或其他地方定义
 extern void setPrefString(NSString *key, NSString *value);
@@ -32,6 +37,17 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
 @interface LauncherRightPanelViewController () <UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 
+// ★ [NORIGHT] 头像裁剪器的呈现宿主(容器 0×0 后改由"顶层可见 VC"代呈,关闭时要用同一个)
+@property(nonatomic, weak) UIViewController *norightAvatarHost;
+
+// ★ [NORIGHT] 右栏 UI 已下线(容器 0×0 + hidden),但本控制器保留为不可见控制器:
+//   下面两个数组用于"整组停用/恢复"setupUI 里的内部约束,避免 0×0 与 required 约束打架。
+@property(nonatomic, strong) NSArray<NSLayoutConstraint *> *norightPanelConstraints;   // setupUI 里那一大组
+@property(nonatomic, strong) NSArray<NSLayoutConstraint *> *norightExtraConstraints;   // 两条防重叠守卫
+@property(nonatomic, assign) BOOL norightPanelCollapsed;
+@property(nonatomic, assign) BOOL norightAvatarOnly;                                       // ★ [UI-ADAPT] 头像专用紧凑布局是否生效
+@property(nonatomic, strong) NSArray<NSLayoutConstraint *> *norightAvatarOnlyConstraints;  // ★ [UI-ADAPT]
+
 @property(nonatomic, strong) UIImageView *avatarImageView;
 @property(nonatomic, strong) UILabel *usernameLabel;
 @property(nonatomic, strong) UILabel *versionLabel;
@@ -40,6 +56,18 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 @property(nonatomic, strong) UIButton *executeJarBtn;
 // JIT 状态指示标签（启动游戏按钮上方）
 @property(nonatomic, strong) UILabel *jitStatusLabel;
+
+// ★ [LAUNCHA] 竖屏「紧凑胶囊」启动键：需要按方向改【常量】的约束引用。
+//   横屏仍是大发光胶囊，所以同一属性只保存一套约束、方向变化时改 constant，绝不双钉。
+@property(nonatomic, strong) NSLayoutConstraint *launchHeightConstraint;        // 启动键高度 46↔36
+@property(nonatomic, strong) NSLayoutConstraint *jitHeightConstraint;           // JIT 标签高度 20↔18
+@property(nonatomic, strong) NSLayoutConstraint *jitToLaunchConstraint;         // JIT 底 ↔ 启动键顶 -8↔-4
+@property(nonatomic, strong) NSLayoutConstraint *launchToExecuteConstraint;     // 启动键底 ↔ 执行JAR 顶 -8↔-6
+@property(nonatomic, strong) NSLayoutConstraint *downloadToJitConstraint;       // 下载中心底 ↔ JIT 顶 -8↔-6
+@property(nonatomic, strong) NSLayoutConstraint *bottomRowMarginConstraint;     // 底部排距 safeArea 底 -12↔-10
+// ★ [LAUNCHA] 已应用的方向态缓存：-1=尚未应用，0=横屏(大发光)，1=竖屏(紧凑)。
+//   用于避免 layout 期间重复重算样式；只有真正切换方向时才重做。
+@property(nonatomic, assign) NSInteger launchCompactState;
 
 // 下载相关属性
 @property(nonatomic, strong) MinecraftResourceDownloadTask *task;
@@ -135,6 +163,21 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                                              selector:@selector(reapplyBackgroundEffect)
                                                  name:@"BackgroundUIEffectChanged"
                                                object:nil];
+
+    // ★ [NORIGHT] 右栏 UI 已下线(容器 0×0 + hidden)。新入口(主页欢迎卡 / 主页底部启动胶囊 /
+    //   顶栏 pill 排(JIT / 执行Jar / 选择版本 / 下载中心))通过这两个通知把动作转发到【本类原有的方法】——
+    //   启动链路 / 执行 Jar / 版本选择 / 下载中心 一律走原实现,零复制、零改动。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(norightHandleAction:)
+                                                 name:AmeRightPanelActionNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(norightHandleStateRequest:)
+                                                 name:AmeRightPanelRequestStateNotification
+                                               object:nil];
+
+    // ★ [NORIGHT] 首次广播一次状态:主页若已注册监听,即可拿到版本号 / JIT / 启动键文案。
+    [self norightBroadcastState];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -174,6 +217,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.avatarImageView.translatesAutoresizingMaskIntoConstraints = NO;
     self.avatarImageView.contentMode = UIViewContentModeScaleAspectFit;
     self.avatarImageView.layer.cornerRadius = 36;
+    self.avatarImageView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.avatarImageView.layer.masksToBounds = YES;
     self.avatarImageView.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
     self.avatarImageView.image = [UIImage systemImageNamed:@"person.circle.fill"];
@@ -248,6 +292,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.downloadCenterButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.downloadCenterButton.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
     self.downloadCenterButton.layer.cornerRadius = 10;
+    self.downloadCenterButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.downloadCenterButton.layer.masksToBounds = YES;
     // 左侧下载图标
     UIImage *downloadIcon = [UIImage systemImageNamed:@"arrow.down.circle"];
@@ -285,6 +330,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.downloadCenterBadgeLabel.backgroundColor = [UIColor systemRedColor];
     self.downloadCenterBadgeLabel.textAlignment = NSTextAlignmentCenter;
     self.downloadCenterBadgeLabel.layer.cornerRadius = 8.0;
+    self.downloadCenterBadgeLabel.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.downloadCenterBadgeLabel.layer.masksToBounds = YES;
     self.downloadCenterBadgeLabel.hidden = YES;
     [self.downloadCenterButton addSubview:self.downloadCenterBadgeLabel];
@@ -301,6 +347,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.launchButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.launchButton.backgroundColor = accentColor();
     self.launchButton.layer.cornerRadius = 10;
+    self.launchButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.launchButton.layer.masksToBounds = YES;
     // FCL 风格：按钮阴影（elevation 效果），增强层次感
     self.launchButton.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -324,6 +371,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.jitStatusLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
     self.jitStatusLabel.textAlignment = NSTextAlignmentCenter;
     self.jitStatusLabel.layer.cornerRadius = 8;
+    self.jitStatusLabel.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.jitStatusLabel.layer.masksToBounds = YES;
     self.jitStatusLabel.text = localize(@"i18n_str_413", nil);
     [self.view addSubview:self.jitStatusLabel];
@@ -339,6 +387,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.manageVersionBtn.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.manageVersionBtn.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
     self.manageVersionBtn.layer.cornerRadius = 10;
+    self.manageVersionBtn.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     [self.manageVersionBtn addTarget:self action:@selector(showVersionPicker) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.manageVersionBtn];
 
@@ -352,6 +401,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.executeJarBtn.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.executeJarBtn.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
     self.executeJarBtn.layer.cornerRadius = 10;
+    self.executeJarBtn.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     [self.executeJarBtn addTarget:self action:@selector(executeJar) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.executeJarBtn];
     
@@ -359,25 +409,27 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     // - 上半部分（头像/用户名/版本/进度）自上而下锚定在顶部
     // - 下半部分（执行Jar/选择版本/JIT/启动按钮）自下而上锚定在底部
     // 这样 JIT 显示和启动游戏按钮位于右侧面板下方，与头像区分离，避免拥挤。
-    [NSLayoutConstraint activateConstraints:@[
+    // ★ [NORIGHT] 这一整组约束改存进属性:容器被归零时整组停用 ⇒ 0×0 不会与内部 required 约束冲突。
+    self.norightPanelConstraints = @[
         // 头像（顶部）
-        [self.avatarImageView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:16],
+        [self.avatarImageView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:10],   // ★ [NOOVERLAP-2]
         [self.avatarImageView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.avatarImageView.widthAnchor constraintEqualToConstant:72],
-        [self.avatarImageView.heightAnchor constraintEqualToConstant:72],
+        // ★ [NOOVERLAP-2] 上半截压矮,给"下载中心"按钮腾位置(见文件末硬防护)
+        [self.avatarImageView.widthAnchor constraintEqualToConstant:56],
+        [self.avatarImageView.heightAnchor constraintEqualToConstant:56],
 
         // 用户名
-        [self.usernameLabel.topAnchor constraintEqualToAnchor:self.avatarImageView.bottomAnchor constant:8],
+        [self.usernameLabel.topAnchor constraintEqualToAnchor:self.avatarImageView.bottomAnchor constant:6],   // ★ [NOOVERLAP-2]
         [self.usernameLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [self.usernameLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
 
         // 版本
-        [self.versionLabel.topAnchor constraintEqualToAnchor:self.usernameLabel.bottomAnchor constant:4],
+        [self.versionLabel.topAnchor constraintEqualToAnchor:self.usernameLabel.bottomAnchor constant:3],   // ★ [NOOVERLAP-2]
         [self.versionLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [self.versionLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
 
         // 进度标签
-        [self.progressLabel.topAnchor constraintEqualToAnchor:self.versionLabel.bottomAnchor constant:8],
+        [self.progressLabel.topAnchor constraintEqualToAnchor:self.versionLabel.bottomAnchor constant:5],   // ★ [NOOVERLAP-2]
         [self.progressLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [self.progressLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
 
@@ -388,7 +440,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
         // ===== 下载中心入口按钮（进度条下方）=====
         // 当有下载任务时显示，点击弹出 DownloadTasksViewController（参照 FCL/ZL2/HMCL 下载进度弹窗）
-        [self.downloadCenterButton.topAnchor constraintEqualToAnchor:self.progressView.bottomAnchor constant:8],
+        // ★ [NOOVERLAP] 竖屏右栏矮:下载中心按钮不再"从进度条往下长",
+        //   改成【钉在 JIT 标签上方】—— 两边各自有归属,数学上不可能重叠。
+        self.downloadToJitConstraint = [self.downloadCenterButton.bottomAnchor constraintEqualToAnchor:self.jitStatusLabel.topAnchor constant:-8], // ★ [LAUNCHA]
         [self.downloadCenterButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [self.downloadCenterButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
         [self.downloadCenterButton.heightAnchor constraintEqualToConstant:36],
@@ -409,7 +463,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
         // ===== 下方按钮区（自下而上锚定到 safeArea 底部，参照 FCL 两按钮一排）=====
         // 执行Jar 按钮（最底部，左半区）
-        [self.executeJarBtn.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
+        self.bottomRowMarginConstraint = [self.executeJarBtn.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12], // ★ [LAUNCHA]
         [self.executeJarBtn.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [self.executeJarBtn.heightAnchor constraintEqualToConstant:38],
 
@@ -423,26 +477,147 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         [self.executeJarBtn.widthAnchor constraintEqualToAnchor:self.manageVersionBtn.widthAnchor],
 
         // 启动按钮（占满整排，位于两按钮上方）
-        [self.launchButton.bottomAnchor constraintEqualToAnchor:self.executeJarBtn.topAnchor constant:-8],
+        // ★ [LAUNCHA] 高度改为可调常量：竖屏紧凑 36pt，横屏保持原 46pt（见 ameApplyLaunchButtonAppearance）
+        self.launchToExecuteConstraint = [self.launchButton.bottomAnchor constraintEqualToAnchor:self.executeJarBtn.topAnchor constant:-8], // ★ [LAUNCHA]
         [self.launchButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [self.launchButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
-        [self.launchButton.heightAnchor constraintEqualToConstant:46],
+        self.launchHeightConstraint = [self.launchButton.heightAnchor constraintEqualToConstant:46], // ★ [LAUNCHA]
 
         // JIT 状态标签（启动按钮上方）
-        [self.jitStatusLabel.bottomAnchor constraintEqualToAnchor:self.launchButton.topAnchor constant:-8],
+        // ★ [LAUNCHA] 标签高度与到启动键的间距均为可调常量（竖屏收紧）
+        self.jitToLaunchConstraint = [self.jitStatusLabel.bottomAnchor constraintEqualToAnchor:self.launchButton.topAnchor constant:-8], // ★ [LAUNCHA]
         [self.jitStatusLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [self.jitStatusLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
-        [self.jitStatusLabel.heightAnchor constraintEqualToConstant:20],
-    ]];
+        self.jitHeightConstraint = [self.jitStatusLabel.heightAnchor constraintEqualToConstant:20], // ★ [LAUNCHA]
+    ];   // ★ [NORIGHT]
+    [NSLayoutConstraint activateConstraints:self.norightPanelConstraints];
 
-    // 进度条底部需留出空间避免与下方 JIT 标签重叠（弱约束，允许中间留白）
-    [NSLayoutConstraint constraintWithItem:self.jitStatusLabel
+    // ★ [NOOVERLAP-2] 下载中心按钮【顶部】不得高于进度条底部 + 8:
+    //   上半截(头像→版本→进度条)自上而下、下半截(按钮→JIT→启动按钮)自下而上,
+    //   两截相遇处原本没人管 ⇒ 按钮压住"游戏信息"(版本号),用户实测已报。
+    NSLayoutConstraint *norightDownloadTopGuard = [NSLayoutConstraint constraintWithItem:self.downloadCenterButton
                                 attribute:NSLayoutAttributeTop
                                 relatedBy:NSLayoutRelationGreaterThanOrEqual
                                    toItem:self.progressView
                                 attribute:NSLayoutAttributeBottom
                                multiplier:1.0
-                                 constant:12].active = YES;
+                                 constant:8];
+
+    // 进度条底部需留出空间避免与下方 JIT 标签重叠（弱约束，允许中间留白）
+    NSLayoutConstraint *norightJITTopGuard = [NSLayoutConstraint constraintWithItem:self.jitStatusLabel
+                                attribute:NSLayoutAttributeTop
+                                relatedBy:NSLayoutRelationGreaterThanOrEqual
+                                   toItem:self.progressView
+                                attribute:NSLayoutAttributeBottom
+                               multiplier:1.0
+                                 constant:12];
+
+    // ★ [NORIGHT] 两条"防重叠"守卫也纳入可停用集合(与上面那一大组同生共死)。
+    self.norightExtraConstraints = @[norightDownloadTopGuard, norightJITTopGuard];
+    [NSLayoutConstraint activateConstraints:self.norightExtraConstraints];
+}
+
+#pragma mark - ★ [LAUNCHA] 竖屏紧凑启动键（方向自适应）
+
+/// 当前是否竖屏：以 view 实际尺寸判定（与 LauncherRootViewController 的 ameIsPortraitNow 口径一致，
+/// 比 traitCollection 更可靠——iPad 分屏/旋转时 size class 可能不变）。
+- (BOOL)ameIsPortraitNow {
+    CGSize size = self.view.bounds.size;
+    if (size.width <= 0 || size.height <= 0) return NO;
+    return size.width <= size.height;
+}
+
+/// 竖屏：启动键 = 紧凑胶囊（淡 accent 底 + 1px 描边 + ▶ 图标 + 副标题字号，无大渐变/发光）；
+/// 横屏：保持原「大发光胶囊」不动。
+/// 只改观感与占高，绝不触碰 target/action、可用性判断与文案 localize key。
+/// 全部走常量（高度/间距），不做 frame 硬摆、不双钉同一属性。
+- (void)ameApplyLaunchButtonAppearance {
+    if (!self.launchButton) return;
+
+    BOOL portrait = [self ameIsPortraitNow];
+    UIColor *accent = accentColor() ?: [UIColor systemBlueColor];
+
+    // ---- ① 占高：高度 + 相关间距（竖屏收紧；横屏改回原值，与改动前完全一致）----
+    self.launchHeightConstraint.constant    = portrait ? 36.0 : 46.0;
+    self.jitHeightConstraint.constant       = portrait ? 18.0 : 20.0;
+    self.jitToLaunchConstraint.constant     = portrait ? -4.0 : -8.0;
+    self.launchToExecuteConstraint.constant = portrait ? -6.0 : -8.0;
+    self.downloadToJitConstraint.constant   = portrait ? -6.0 : -8.0;
+    self.bottomRowMarginConstraint.constant = portrait ? -10.0 : -12.0;
+
+    // ---- ② 观感 ----
+    if (portrait) {
+        // 淡色底（accent alpha 0.15）+ 1px accent 描边 + 胶囊圆角
+        self.launchButton.backgroundColor = [accent colorWithAlphaComponent:0.15];
+        self.launchButton.layer.borderWidth = 1.0;
+        self.launchButton.layer.borderColor = accent.CGColor;
+        self.launchButton.layer.cornerRadius = 18.0;   // 36/2，viewDidLayoutSubviews 再按真实高度校正
+        self.launchButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
+        self.launchButton.layer.masksToBounds = YES;
+        self.launchButton.layer.shadowOpacity = 0.0;   // 去发光/投影
+        // 字号降到 Subheadline 一档
+        self.launchButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        [self.launchButton setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        // 左侧 ▶ 图标（play.fill），图标+文字居中
+        UIImage *play = [UIImage systemImageNamed:@"play.fill"];
+        if (play) {
+            play = [play imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        }
+        [self.launchButton setImage:play forState:UIControlStateNormal];
+        self.launchButton.tintColor = accent;
+        self.launchButton.imageEdgeInsets = UIEdgeInsetsMake(0, -6, 0, 0);
+        self.launchButton.titleEdgeInsets = UIEdgeInsetsMake(0, 6, 0, 0);
+        self.launchButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
+        self.launchButton.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+    } else {
+        // 横屏：完全恢复改动前的「大发光胶囊」外观（实心主题色 + Title3 + 白字，无描边/无图标）
+        self.launchButton.backgroundColor = accent;
+        self.launchButton.layer.borderWidth = 0.0;
+        self.launchButton.layer.cornerRadius = 10.0;
+        self.launchButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
+        self.launchButton.layer.masksToBounds = YES;
+        // 原阴影参数（masksToBounds=YES 会裁剪阴影，故视觉上本就不显示；此处仅为与改前逐值一致）
+        self.launchButton.layer.shadowColor = [UIColor blackColor].CGColor;
+        self.launchButton.layer.shadowOffset = CGSizeMake(0, 2);
+        self.launchButton.layer.shadowRadius = 4;
+        self.launchButton.layer.shadowOpacity = 0.3;
+        self.launchButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
+        [self.launchButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        [self.launchButton setImage:nil forState:UIControlStateNormal];
+        self.launchButton.tintColor = [UIColor whiteColor];
+        self.launchButton.imageEdgeInsets = UIEdgeInsetsZero;
+        self.launchButton.titleEdgeInsets = UIEdgeInsetsZero;
+        self.launchButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
+        self.launchButton.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+    }
+
+    self.launchCompactState = portrait ? 1 : 0;
+}
+
+/// 方向变化回调：重算启动键观感/占高。
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    // ★ [LAUNCHA] iPhone 旋转会改变 size class，这里即时重算（高度/间距/样式一起切）。
+    [self ameApplyLaunchButtonAppearance];
+}
+
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    // ★ [LAUNCHA] 兜底：iPad 分屏/旋转时 size class 可能不变，traitCollectionDidChange 不触发。
+    //   仅在「竖/横真正切换」时才重做，避免 layout 期间反复重算样式。
+    NSInteger want = [self ameIsPortraitNow] ? 1 : 0;
+    if (self.launchCompactState != want) {
+        [self ameApplyLaunchButtonAppearance];
+    }
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    // ★ [LAUNCHA] 胶囊圆角按真实高度一半校正（竖屏）；横屏圆角由 ameApplyLaunchButtonAppearance 固定 10。
+    if ([self ameIsPortraitNow]) {
+        CGFloat h = CGRectGetHeight(self.launchButton.bounds);
+        if (h > 0) self.launchButton.layer.cornerRadius = h / 2.0;
+    }
 }
 
 #pragma mark - Actions
@@ -479,10 +654,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.presentedDownloadCenterVC = downloadCenterVC;
 
     // 获取最顶层的视图控制器来 present
-    UIViewController *topVC = self;
-    while (topVC.presentedViewController) {
-        topVC = topVC.presentedViewController;
-    }
+    // ★ [NORIGHT] 右栏容器已 0×0 + hidden ⇒ 改用"窗口里最顶层的可见 VC"作宿主
+    //   (弹出的内容、模态样式、回调 delegate 全部不变)。
+    UIViewController *topVC = [self norightPresenter];
 
     [topVC presentViewController:downloadCenterVC animated:YES completion:nil];
 }
@@ -530,6 +704,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         self.downloadCenterButton.hidden = YES;
         self.downloadCenterBadgeLabel.hidden = YES;
         [self.downloadCenterActivityIndicator stopAnimating];
+        [self norightPostState];   // ★ [TOPBAR2] 无任务也广播(顶栏 pill 回到纯入口态)
         return;
     }
 
@@ -577,12 +752,14 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         self.downloadCenterProgressLabel.text = localize(@"i18n_str_125", nil);
         [self.downloadCenterActivityIndicator stopAnimating];
     }
+    [self norightPostState];   // ★ [TOPBAR2] 角标/百分比 → 顶栏「下载中心」pill
 }
 
 #pragma mark - 自定义头像导入
 
 - (void)showAvatarMenu:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    // ★ [NORIGHT] 允许外部(主页欢迎卡的头像长按)以 nil gesture 直接调用:nil 视为"要弹菜单"。
+    if (gesture && gesture.state != UIGestureRecognizerStateBegan) return;
 
     BaseAuthenticator *currentAuth = BaseAuthenticator.current;
     NSString *accountId = currentAuth.authData[@"accountId"];
@@ -608,11 +785,15 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [sheet addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
 
     // iPad 适配：用 popover 锚定到头像
+    // ★ [NORIGHT] 右栏头像已随容器下线(0×0)⇒ 锚点改用"当前顶层可见 VC 的 view 中心",
+    //   否则 ActionSheet 会落到屏幕原点;菜单选项与 handler 一字不改。
+    UIViewController *norightHost = [self norightPresenter];
+    UIView *norightAnchor = norightHost.view ?: self.view;
     if (sheet.popoverPresentationController) {
-        sheet.popoverPresentationController.sourceView = self.avatarImageView;
-        sheet.popoverPresentationController.sourceRect = self.avatarImageView.bounds;
+        sheet.popoverPresentationController.sourceView = norightAnchor;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(norightAnchor.bounds), CGRectGetMidY(norightAnchor.bounds), 1, 1);
     }
-    [self presentViewController:sheet animated:YES completion:nil];
+    [norightHost presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)openAvatarImagePicker {
@@ -625,7 +806,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
     picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
     picker.delegate = self;
-    [self presentViewController:picker animated:YES completion:nil];
+    [[self norightPresenter] presentViewController:picker animated:YES completion:nil];   // ★ [NORIGHT]
 }
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
@@ -641,7 +822,10 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 ImageCropperViewController *cropperVC = [[ImageCropperViewController alloc] initWithImage:selectedImage];
                 __weak typeof(self) weakSelf = self;
                 cropperVC.completionHandler = ^(UIImage * _Nullable croppedImage) {
-                    [weakSelf dismissViewControllerAnimated:YES completion:^{
+                    // ★ [NORIGHT] 裁剪器由 norightAvatarHost 代呈 ⇒ 关闭必须用同一个宿主
+                    //   (原来 self 既是呈者又是关者;容器 0×0 后 self 上已无 presented VC)。
+                    UIViewController *norightCloser = weakSelf.norightAvatarHost ?: weakSelf;
+                    [norightCloser dismissViewControllerAnimated:YES completion:^{
                         if (croppedImage) {
                             [weakSelf saveAvatarImage:croppedImage];
                         }
@@ -649,9 +833,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 };
                 // 本 VC 为 child view controller，self.navigationController 可能为 nil，
                 // 故用 present 方式呈现裁剪器（包装在 NavigationController 中以保留其导航栏样式）
+                // ★ [NORIGHT] 右栏容器 0×0 + hidden ⇒ 由"顶层可见 VC"代呈裁剪器(内容/样式不变);
+                //   宿主记到 norightAvatarHost,后面的 completionHandler 要用**同一个**把它关掉。
+                UIViewController *norightHost = [self norightPresenter];
+                self.norightAvatarHost = norightHost;
                 UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:cropperVC];
                 nav.modalPresentationStyle = UIModalPresentationFullScreen;
-                [self presentViewController:nav animated:YES completion:nil];
+                [norightHost presentViewController:nav animated:YES completion:nil];
             } else {
                 [self saveAvatarImage:selectedImage];
             }
@@ -688,7 +876,15 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 - (void)updateJITStatus {
     if (!self.jitStatusLabel) return;
     BOOL enabled = isJITEnabled(NO);
-    if (enabled) {
+    // 三态显示（议题 #133）：TXM 机型上 JIT 可能"已启用"（CS_DEBUGGED 置位）
+    // 而服务 brk #0x69 的调试器已脱离——这是预期可恢复状态（启动时自动重附加），
+    // 用琥珀色区别于红色"未开启"，两边都不误报。
+    if (enabled && DeviceHasJITFlags(JIT_FLAG_FORCE_MIRRORED | JIT_FLAG_HAS_TXM) &&
+        !JIT26IsLikelyDebuggerKeepAttached()) {
+        self.jitStatusLabel.text = localize(@"i18n_str_jit26_pending", nil);
+        self.jitStatusLabel.textColor = [UIColor colorWithRed:0.95 green:0.75 blue:0.2 alpha:1.0];
+        self.jitStatusLabel.backgroundColor = [[UIColor colorWithRed:0.95 green:0.75 blue:0.2 alpha:1.0] colorWithAlphaComponent:0.15];
+    } else if (enabled) {
         self.jitStatusLabel.text = localize(@"i18n_str_421", nil);
         self.jitStatusLabel.textColor = [UIColor colorWithRed:0.2 green:0.7 blue:0.3 alpha:1.0];
         self.jitStatusLabel.backgroundColor = [[UIColor colorWithRed:0.2 green:0.7 blue:0.3 alpha:1.0] colorWithAlphaComponent:0.15];
@@ -697,6 +893,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         self.jitStatusLabel.textColor = [UIColor colorWithRed:0.9 green:0.4 blue:0.3 alpha:1.0];
         self.jitStatusLabel.backgroundColor = [[UIColor colorWithRed:0.9 green:0.4 blue:0.3 alpha:1.0] colorWithAlphaComponent:0.15];
     }
+    [self norightPostState];   // ★ [NORIGHT] 把 JIT 文本/颜色同步给主页顶栏 pill
 }
 
 #pragma mark - 自定义外观（字体颜色）
@@ -706,7 +903,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 /// 同时读取 general.accent_color 刷新启动按钮主题色（FCL 风格主题强调色）。
 - (void)applyCustomAppearance {
     // 主题强调色：刷新启动按钮背景，使用户自选的主题色立即生效
-    self.launchButton.backgroundColor = accentColor();
+    // ★ [LAUNCHA] 改为方向自适应刷新：竖屏紧凑胶囊是「淡底 + 描边」，横屏才是实心主题色。
+    //   原实现写死 accentColor() 实心底，会在竖屏把紧凑胶囊覆盖回大色块。
+    [self ameApplyLaunchButtonAppearance];
 
     NSString *hex = getPrefObject(@"general.text_color");
     UIColor *customColor = [self colorFromHexString:hex];
@@ -797,9 +996,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
     
     // iPad 上 ActionSheet 必须指定 popoverPresentationController
-    alert.popoverPresentationController.sourceView = self.manageVersionBtn;
-    alert.popoverPresentationController.sourceRect = self.manageVersionBtn.bounds;
-    [self presentViewController:alert animated:YES completion:nil];
+    // ★ [NORIGHT] 右栏按钮已随容器下线(0×0)⇒ 拿它当锚点会让 ActionSheet 贴到屏幕原点;
+    //   改用"当前顶层可见 VC 的 view 中心"作锚点(ActionSheet 的内容/选项一字不改)。
+    UIViewController *norightHost = [self norightPresenter];
+    UIView *norightAnchor = norightHost.view ?: self.view;
+    alert.popoverPresentationController.sourceView = norightAnchor;
+    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(norightAnchor.bounds), CGRectGetMidY(norightAnchor.bounds), 1, 1);
+    [norightHost presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)selectProfile:(NSString *)profileName {
@@ -822,7 +1025,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
-    [self presentViewController:picker animated:YES completion:nil];
+    [[self norightPresenter] presentViewController:picker animated:YES completion:nil];   // ★ [NORIGHT]
 }
 
 #pragma mark - UIDocumentPickerDelegate
@@ -849,7 +1052,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             [PLCrashView restartLauncher];
         }]];
         [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_217", nil) style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
+        [[self norightPresenter] presentViewController:alert animated:YES completion:nil];   // ★ [NORIGHT]
         return;
     }
 
@@ -883,7 +1086,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [self invokeAfterJITEnabled:^{
         vc.modalPresentationStyle = UIModalPresentationFullScreen;
         NSLog(@"[ModInstaller] launching %@ (Java %d, home=%@)", vc.filepath, requiredJavaVersion, javaHome);
-        [self presentViewController:vc animated:YES completion:nil];
+        [[self norightPresenter] presentViewController:vc animated:YES completion:nil];   // ★ [NORIGHT]
     }];
 }
 
@@ -893,7 +1096,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                                                                     message:message
                                                              preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_322", nil) style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];   // ★ [NORIGHT]
 }
 
 #pragma mark - Launch Game
@@ -1096,6 +1299,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         title = localize(@"i18n_str_412", nil);
     }
     [self.launchButton setTitle:title forState:UIControlStateNormal];
+    [self norightPostState];   // ★ [NORIGHT] 启动键文案/可用性 → 主页底部胶囊
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
@@ -1203,6 +1407,19 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     
     if (isJITEnabled(false)) {
         [ALTServerManager.sharedManager stopDiscovering];
+        // TXM 机型（议题 #133）：CS_DEBUGGED 置位只证明"曾经启用过"，外部工具
+        // 退出后调试器早已脱离（ppid=1、无 P_TRACED、无异常端口），此时直接启动
+        // 会在 launchJVM 的 brk #0x69 上 EXC_BREAKPOINT 闪退。探针全无时先经
+        // stikjit:// 把 UniversalJIT26 脚本重附加，等调试器真正存活再启动。
+        if (DeviceHasJITFlags(JIT_FLAG_FORCE_MIRRORED | JIT_FLAG_HAS_TXM) &&
+            !JIT26IsLikelyDebuggerKeepAttached() &&
+            !getPrefBool(@"debug.jit26_script_disable")) {
+            NSLog(@"[JIT] [RightPanel] CS_DEBUGGED set but no live JIT26 debugger (ppid=%d traced=%d exn=%d) -- re-attaching",
+                  getppid(), JIT26DebuggerAttachedViaPtrace(), JIT26DebuggerViaExceptionPorts());
+            [self jit_reattachJIT26ThenLaunch:handler];
+            return;
+        }
+        NSLog(@"[JIT] [RightPanel] JIT enabled with live JIT26 debugger, launching directly");
         handler();
         return;
     } else if (hasTrollStoreJIT) {
@@ -1218,27 +1435,135 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             NSData *scriptData = [NSData dataWithContentsOfFile:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"UniversalJIT26.js"]];
             scriptDataString = [@"&script-data=" stringByAppendingString:[scriptData base64EncodedStringWithOptions:0]];
         }
-        [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"stikjit://enable-jit?bundle-id=%@&pid=%d%@", NSBundle.mainBundle.bundleIdentifier, getpid(), scriptDataString]] options:@{} completionHandler:nil];
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"stikjit://enable-jit?bundle-id=%@&pid=%d%@", NSBundle.mainBundle.bundleIdentifier, getpid(), scriptDataString]] options:@{} completionHandler:^(BOOL urlOK) {
+            NSLog(@"[JIT] [RightPanel] openURL stikjit:// -> %d", urlOK);
+            if (!urlOK) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    showDialog(localize(@"Error", nil), @"stikjit:// 无响应（未安装 StikDebug？）。请安装 StikDebug 后重试，或换用其它 JIT 开启方式。\nstikjit:// was not handled (StikDebug not installed?). Install StikDebug and retry.");
+                });
+            }
+        }];
     } else {
         // Assuming 16.7-17.3.1. SideStore still lacks this URL scheme at the time of writing, so it only jumps to SideStore.
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"sidestore://sidejit-enable?pid=%d", getpid()]] options:@{} completionHandler:nil];
     }
-    
+
     self.progressLabel.text = localize(@"i18n_str_436", nil);
-    
+
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"i18n_str_437", nil)
                                                                    message:hasTrollStoreJIT ? localize(@"i18n_str_2054", nil) : localize(@"i18n_str_439", nil)
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:alert animated:YES completion:nil];
-    
+    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];   // ★ [NORIGHT]
+
+    // 后台任务断言：stikjit:// 会把 App 切后台，无断言时 iOS 立即挂起进程，
+    // 等待循环被冻结、用户只能看到无限转圈。
+    __block UIBackgroundTaskIdentifier jit_bgt = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"jit-wait" expirationHandler:^{}];
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (!isJITEnabled(false)) {
-            usleep(1000 * 200);
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:handler];
-        });
+        // 有界等待 120s + 心跳日志，超时走重试弹窗（替代裸 while 死循环）。
+        BOOL ok = ame169_waitForJITCondition(^{ return isJITEnabled(false); }, 120.0, @"isJITEnabled");
+        // 自愈式派发：后台被楔死的主队列上续接块可能丢失，三道防线兜底。
+        ame185_dispatchToMainSelfHealing(^{
+            if (jit_bgt != UIBackgroundTaskInvalid) {
+                [UIApplication.sharedApplication endBackgroundTask:jit_bgt];
+                jit_bgt = UIBackgroundTaskInvalid;
+            }
+            if (ok) {
+                // 后台态 dismiss 的 completion 可能悬空，completion:nil + 直接执行。
+                [alert dismissViewControllerAnimated:YES completion:nil];
+                // 等待成功不等于能安全启动：TXM 上调试器可能在等待期间再次脱离，
+                // 存活性复查不过就重挂。
+                if (DeviceHasJITFlags(JIT_FLAG_FORCE_MIRRORED | JIT_FLAG_HAS_TXM) &&
+                    !JIT26IsLikelyDebuggerKeepAttached() &&
+                    !getPrefBool(@"debug.jit26_script_disable")) {
+                    NSLog(@"[JIT] [RightPanel] wait satisfied but JIT26 debugger is gone -- re-attaching before launch");
+                    [self jit_reattachJIT26ThenLaunch:handler];
+                } else {
+                    handler();
+                }
+            } else {
+                [alert dismissViewControllerAnimated:YES completion:nil];
+                [self jit_showTimeoutRetryAlert:handler];
+            }
+        }, @"RightPanel main wait");
     });
+}
+
+// JIT26 调试器重挂统一助手：stikjit://（附 UniversalJIT26.js）+ 前台等待 +
+// 后台断言 + 有界等调试器存活，超时走重试弹窗。
+- (void)jit_reattachJIT26ThenLaunch:(void(^)(void))handler {
+    self.progressLabel.text = localize(@"i18n_str_436", nil);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"i18n_str_437", nil)
+                                                                   message:localize(@"i18n_str_439", nil)
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];   // ★ [NORIGHT]
+
+    __block UIBackgroundTaskIdentifier jit_bgt = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"jit26-reattach" expirationHandler:^{}];
+
+    void (^fireURL)(void) = ^{
+        NSString *scriptDataString = @"";
+        NSData *scriptData = [NSData dataWithContentsOfFile:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"UniversalJIT26.js"]];
+        if (scriptData) {
+            scriptDataString = [@"&script-data=" stringByAppendingString:[scriptData base64EncodedStringWithOptions:0]];
+        }
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"stikjit://enable-jit?bundle-id=%@&pid=%d%@", NSBundle.mainBundle.bundleIdentifier, getpid(), scriptDataString]] options:@{} completionHandler:^(BOOL urlOK) {
+            NSLog(@"[JIT] [RightPanel] re-attach stikjit:// -> %d (script=%lu bytes)", urlOK, (unsigned long)scriptData.length);
+        }];
+    };
+
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+        // 后台态 openURL 无效：先等回前台再拉起（一次性监听 + 10s 兜底）。
+        __block id obs = nil;
+        obs = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            [[NSNotificationCenter defaultCenter] removeObserver:obs];
+            obs = nil;
+            fireURL();
+        }];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (obs) {
+                [[NSNotificationCenter defaultCenter] removeObserver:obs];
+                obs = nil;
+                fireURL();
+            }
+        });
+    } else {
+        fireURL();
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // 等调试器真正存活（探针），绝不用 CS_DEBUGGED（早已置位，会抢跑进首个 brk）。
+        BOOL ok = ame169_waitForJITCondition(^{ return JIT26IsLikelyDebuggerKeepAttached(); }, 120.0, @"JIT26 debugger attach");
+        ame185_dispatchToMainSelfHealing(^{
+            if (jit_bgt != UIBackgroundTaskInvalid) {
+                [UIApplication.sharedApplication endBackgroundTask:jit_bgt];
+                jit_bgt = UIBackgroundTaskInvalid;
+            }
+            [alert dismissViewControllerAnimated:YES completion:nil];
+            if (ok) {
+                if (handler) handler();
+            } else {
+                [self jit_showTimeoutRetryAlert:handler];
+            }
+        }, @"RightPanel reattach wait");
+    });
+}
+
+// JIT 等待超时后的出路弹窗：重试 = 重走一轮 invokeAfterJITEnabled；
+// 取消 = 回到启动器，用户可手动附加调试器后重试。
+- (void)jit_showTimeoutRetryAlert:(void(^)(void))handler {
+    NSLog(@"[JIT] [RightPanel] JIT wait timed out, showing retry alert");
+    UIAlertController *retry = [UIAlertController alertControllerWithTitle:localize(@"i18n_str_437", nil)
+                                                                   message:localize(@"jit.timeout_retry_msg", nil)
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [retry addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    [retry addAction:[UIAlertAction actionWithTitle:localize(@"jit.retry", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self invokeAfterJITEnabled:handler];
+    }]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        retry.popoverPresentationController.sourceView = self.view;
+        retry.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 0, 0);
+    }
+    [[self norightPresenter] presentViewController:retry animated:YES completion:nil];   // ★ [NORIGHT]
 }
 
 - (void)showAlert:(NSString *)message {
@@ -1246,7 +1571,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                                                                    message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_44", nil) style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];   // ★ [NORIGHT]
 }
 
 #pragma mark - Data Updates
@@ -1262,50 +1587,21 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             self.usernameLabel.text = username;
         }
 
-        // 加载头像优先级：
-        //   1) 用户手动导入的自定义头像（AvatarManager，accountId 命名）
-        //   2) 启动时联网拉取并落盘的皮肤缓存（SkinCacheManager，离线可用）
-        //   3) 在线 URL（profilePicURL），异步下载，失败则保持当前显示
+        // 加载头像：本地自定义头像优先，回退到在线 URL
         // 头像文件名使用 accountId（唯一标识），同名账户头像不再冲突
-        NSString *accountId = currentAuth.authData[@"accountId"];
-        UIImage *localAvatar = [[AvatarManager sharedManager] avatarForAccount:accountId];
+        UIImage *localAvatar = [[AvatarManager sharedManager] avatarForAccount:currentAuth.authData[@"accountId"]];
         if (localAvatar) {
             self.avatarImageView.image = localAvatar;
         } else {
-            UIImage *cachedSkin = [SkinCacheManager cachedHeadImageForAccount:accountId];
-            if (cachedSkin) {
-                // 本地皮肤缓存命中：立即可用，不等网络
-                self.avatarImageView.image = cachedSkin;
-            }
-            // 无论缓存是否命中，都异步刷新一次皮肤缓存（内部有 1 小时节流 + 失败自动回退本地缓存）
-            [SkinCacheManager refreshSkinForAccount:accountId
-                                           authData:currentAuth.authData
-                                              force:NO
-                                         completion:^(BOOL success, BOOL usedCache) {
-                // 联网成功且拿到了新皮肤（usedCache == NO）时，重绘头像
-                if (success && !usedCache) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        UIImage *freshHead = [SkinCacheManager cachedHeadImageForAccount:accountId];
-                        if (freshHead &&
-                            ![[AvatarManager sharedManager] hasCustomAvatarForAccount:accountId]) {
-                            self.avatarImageView.image = freshHead;
-                        }
-                    });
-                }
-            }];
             NSString *avatarURL = currentAuth.authData[@"profilePicURL"];
-            if (avatarURL.length > 0) {
+            if (avatarURL) {
                 avatarURL = [avatarURL stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     NSData *imageData = [NSData dataWithContentsOfURL:[NSURL URLWithString:avatarURL]];
                     if (imageData) {
                         UIImage *image = [UIImage imageWithData:imageData];
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            // 仅当此时仍无自定义头像/皮肤缓存时才覆盖，避免在线图覆盖掉更优的本地图
-                            if (![[AvatarManager sharedManager] hasCustomAvatarForAccount:accountId] &&
-                                ![SkinCacheManager hasCachedSkinForAccount:accountId]) {
-                                self.avatarImageView.image = image;
-                            }
+                            self.avatarImageView.image = image;
                         });
                     }
                 });
@@ -1324,6 +1620,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         self.pendingLaunchAfterLogin = NO;
         [self launchGame];
     }
+    [self norightPostState];   // ★ [NORIGHT]
 }
 
 - (void)updateVersionInfo {
@@ -1346,6 +1643,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 
     [self updateLaunchButtonState];
+    [self norightPostState];   // ★ [NORIGHT] 版本号 → 主页「欢迎回来」卡
 }
 
 #pragma mark - Orientation
@@ -1355,7 +1653,155 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskLandscape;
+    // ★ [PAGE-ADAPT] 与全 App 一致:本面板是 RootVC / CardLayout 的子控制器,朝向本就由窗口根决定;
+    //   原先写死 Landscape 与「窗口层已放开竖屏」的现状不一致,若哪天以模态形式呈现会钉死横屏。
+    //   统一成同族口径(游戏页仍单独锁横屏)。
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    return UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+#pragma mark - ★ [NORIGHT] 右栏卡片下线(新 UI 入口 → 原方法转发)
+
+/// 收起/展开本面板内部的全部约束。
+/// ★ 必须做:容器在 LauncherRootViewController 里被钉成 0×0,而本面板内部那一大组约束是
+///   required(头像宽 56 / 左右 12 / 底部按钮排…),不整组停用就会刷
+///   "Unable to simultaneously satisfy constraints"。
+- (void)norightCollapsePanelLayout:(BOOL)collapsed {
+    if (self.norightPanelCollapsed == collapsed) return;   // 幂等:状态没变直接返回
+    self.norightPanelCollapsed = collapsed;
+    if (collapsed) {
+        [NSLayoutConstraint deactivateConstraints:self.norightPanelConstraints ?: @[]];
+        [NSLayoutConstraint deactivateConstraints:self.norightExtraConstraints ?: @[]];
+    } else {
+        [NSLayoutConstraint activateConstraints:self.norightPanelConstraints ?: @[]];
+        [NSLayoutConstraint activateConstraints:self.norightExtraConstraints ?: @[]];
+    }
+    for (UIView *v in self.view.subviews) { v.hidden = collapsed; }   // 视觉兜底(容器的 hidden 已在根 VC 设)
+    NSLog(@"[NORIGHT] right panel collapsed=%d (panel=%lu extra=%lu)",
+          collapsed,
+          (unsigned long)self.norightPanelConstraints.count,
+          (unsigned long)self.norightExtraConstraints.count);
+}
+
+/// ★ [UI-ADAPT] 头像专用紧凑布局(给 CardLayout / 便当盒用:右栏卡被钉成 ~56×56 的小方卡,
+///   常驻右上角只展示用户头像)。
+///   为什么需要:本面板内部那一大组 required 约束是按“竖条通高”写的
+///   (头像 56 + 用户名 + 版本 + 进度 + 三排按钮 ≈ 300pt);放进 56pt 高的容器里必然冲突
+///   (日志刷 "Unable to simultaneously satisfy constraints",头像被挤到卡片外)。
+///   做法:整组停用 —— 只激活“头像居中铺满小卡”这一小组,其余子视图隐藏。
+///   ★ 只停约束 / 改可见性,不动任何行为:动作仍走 norightHandleAction: → 原方法。
+- (void)norightAvatarOnlyLayout:(BOOL)on {
+    if (self.norightAvatarOnly == on) return;   // 幂等
+    self.norightAvatarOnly = on;
+    if (!on) {   // 单向往回:只摘自身这组约束,其余可见性交回各业务方法
+        [NSLayoutConstraint deactivateConstraints:self.norightAvatarOnlyConstraints ?: @[]];
+        NSLog(@"[UI-ADAPT] right panel avatarOnly=0");
+        return;
+    }
+    [NSLayoutConstraint deactivateConstraints:self.norightPanelConstraints ?: @[]];
+    [NSLayoutConstraint deactivateConstraints:self.norightExtraConstraints ?: @[]];
+    for (UIView *v in self.view.subviews) { v.hidden = (v != self.avatarImageView); }
+    self.avatarImageView.hidden = NO;
+    if (self.norightAvatarOnlyConstraints.count == 0) {
+        CGFloat side = 56.0;
+        self.norightAvatarOnlyConstraints = @[
+            [self.avatarImageView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+            [self.avatarImageView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+            [self.avatarImageView.widthAnchor  constraintEqualToConstant:side],
+            [self.avatarImageView.heightAnchor constraintEqualToConstant:side],
+        ];
+    }
+    [NSLayoutConstraint activateConstraints:self.norightAvatarOnlyConstraints];
+    NSLog(@"[UI-ADAPT] right panel avatarOnly=1 (panel=%lu extra=%lu)",
+          (unsigned long)self.norightPanelConstraints.count,
+          (unsigned long)self.norightExtraConstraints.count);
+}
+
+/// ★ 新 UI 发起动作的**唯一入口**:只广播动作名,真正的实现仍是本类原来的方法
+///   (见 norightHandleAction:)。这样主页/实例页不需要持有本控制器的引用。
++ (void)norightPostAction:(NSString *)action {
+    if (action.length == 0) return;
+    [[NSNotificationCenter defaultCenter] postNotificationName:AmeRightPanelActionNotification
+                                                        object:nil
+                                                      userInfo:@{@"action": action}];
+}
+
+/// 动作转发:新 UI 的每一次点击都落到**原方法**上,行为逐条不变。
+- (void)norightHandleAction:(NSNotification *)note {
+    NSString *action = note.userInfo[@"action"];
+    if (![action isKindOfClass:[NSString class]]) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([action isEqualToString:@"launch"]) {
+            [self launchButtonTapped];        // ★ 原实现:账号校验 / 下载拦截 / 版本解析 / JIT / 进度页
+        } else if ([action isEqualToString:@"executeJar"]) {
+            [self executeJar];                // ★ 原实现:文件选择器 → enterModInstallerWithPath:
+        } else if ([action isEqualToString:@"versionPicker"]) {
+            [self showVersionPicker];         // ★ 原实现:版本 ActionSheet → selectProfile:
+        } else if ([action isEqualToString:@"downloadCenter"]) {
+            [self openDownloadCenter];        // ★ [TOPBAR2] 原实现:下载中心 FormSheet(顶栏 pill 转发)
+        } else if ([action isEqualToString:@"accountManager"]) {
+            [self selectAccount:nil];         // ★ 原实现:清"待启动"标记 + 发 ShowAccountManager
+        } else if ([action isEqualToString:@"avatarMenu"]) {
+            [self showAvatarMenu:nil];        // ★ 原实现:导入/清除自定义头像菜单
+        } else {
+            NSLog(@"[NORIGHT] unknown action: %@", action);
+        }
+    });
+}
+
+/// 外部索取状态(主页 viewWillAppear 会发一次)⇒ 实时重算 JIT 后广播。
+- (void)norightHandleStateRequest:(NSNotification *)note {
+    [self norightBroadcastState];
+}
+
+/// 广播当前状态(版本号 / JIT 文本与颜色 / 用户名 / 启动键标题与可用性)。
+/// 主页欢迎卡(版本号)、顶栏 JIT pill、底部启动胶囊全靠它保持与右栏原逻辑同源。
+- (void)norightBroadcastState {
+    [self updateJITStatus];            // 实时重算(内部也会 norightPostState 一次)
+    [self updateDownloadCenterButton]; // ★ [TOPBAR2] 顺带刷新下载中心角标/百分比(内部也会 norightPostState)
+    [self norightPostState];           // 其余字段补齐
+}
+
+- (void)norightPostState {
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    if (self.versionLabel.text)  info[@"version"] = self.versionLabel.text;
+    if (self.usernameLabel.text) info[@"user"]    = self.usernameLabel.text;
+    if (self.jitStatusLabel.text)      info[@"jit"]      = self.jitStatusLabel.text;
+    if (self.jitStatusLabel.textColor) info[@"jitColor"] = self.jitStatusLabel.textColor;
+    NSString *title = [self.launchButton titleForState:UIControlStateNormal];
+    if (title) info[@"launchTitle"] = title;
+    info[@"launchEnabled"] = @(self.launchButton.enabled);
+    // ★ [TOPBAR2] 下载中心状态:数值**直接取自**本类原按钮的 badge/progress 标签,不重算、不复制。
+    //   顶栏「下载中心」pill 只做展示,与右栏原按钮永远同口径。
+    info[@"dcActive"]   = @(!self.downloadCenterButton.hidden);
+    info[@"dcBadge"]    = self.downloadCenterBadgeLabel.hidden ? @"" : (self.downloadCenterBadgeLabel.text ?: @"");
+    info[@"dcProgress"] = self.downloadCenterProgressLabel.text ?: @"";
+    [[NSNotificationCenter defaultCenter] postNotificationName:AmeRightPanelStateNotification
+                                                        object:nil
+                                                      userInfo:info];
+}
+
+/// ★ present 宿主:容器已 0×0 + hidden,自身不再是可靠的呈现宿主。
+///   统一取"窗口里当前最顶层的可见 VC" —— 弹出的内容 / 顺序 / delegate 回调全部不变。
+- (UIViewController *)norightPresenter {
+    UIViewController *host = self.view.window.rootViewController ?: self;
+    NSUInteger guard = 0;
+    while (guard++ < 16) {
+        UIViewController *next = host.presentedViewController;
+        if (next) { host = next; continue; }
+        if ([host isKindOfClass:[UITabBarController class]]) {
+            UIViewController *sel = [(UITabBarController *)host selectedViewController];
+            if (sel && sel != host) { host = sel; continue; }
+        }
+        if ([host isKindOfClass:[UINavigationController class]]) {
+            UIViewController *top = [(UINavigationController *)host topViewController];
+            if (top && top != host) { host = top; continue; }
+        }
+        break;
+    }
+    return host;
 }
 
 @end

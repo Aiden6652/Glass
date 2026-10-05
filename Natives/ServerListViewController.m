@@ -4,6 +4,8 @@
 //
 
 #import "ServerListViewController.h"
+// ★ [GLASS-LIQUID] 材质统一走风格层(AmeGlassEffect):iOS≥26 ⇒ 系统 UIGlassEffect
+#import "UIKit+GlassSurface.h"
 #import "BackgroundManager.h"
 #import "InlineMessageView.h"
 #import "PLPreferences.h"
@@ -105,8 +107,9 @@
 - (void)sourceChanged:(UISegmentedControl *)sender {
     ServerDownloadAPI newAPI = (sender.selectedSegmentIndex == 1) ? ServerDownloadAPICurseForge : ServerDownloadAPIModrinth;
 
-    // CurseForge 切换前校验 API Key
-    if (newAPI == ServerDownloadAPICurseForge && ![CurseForgeAPI isAPIKeyConfigured]) {
+    // ★ [MODPACK-FIX] CurseForge 切换前校验：免 key 可用（无 key 时 baseURL 强制落 MCIM 镜像，
+    // 实测 200），门控改用 isSourceAvailable——key 仅官方直连需要。
+    if (newAPI == ServerDownloadAPICurseForge && ![CurseForgeAPI isSourceAvailable]) {
         InlineMessageView *msg = [InlineMessageView showInViewController:self
                                                                   title:localize(@"i18n_str_171", nil)
                                                                message:localize(@"i18n_str_172", nil)
@@ -227,9 +230,11 @@
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
         // 毛玻璃卡片
-        UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+        // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect(不再直接 UIBlurEffect)
+        UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:AmeGlassEffect(UIBlurEffectStyleSystemMaterial)];
         blur.translatesAutoresizingMaskIntoConstraints = NO;
         blur.layer.cornerRadius = 12;
+        blur.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
         blur.layer.masksToBounds = YES;
         [cell.contentView insertSubview:blur atIndex:0];
         [NSLayoutConstraint activateConstraints:@[
@@ -261,6 +266,7 @@
     UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
     [cell.imageView setImageWithURL:[NSURL URLWithString:item.iconURL] placeholderImage:placeholder];
     cell.imageView.layer.cornerRadius = 10;
+    cell.imageView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     cell.imageView.clipsToBounds = YES;
     cell.imageView.contentMode = UIViewContentModeScaleAspectFill;
 

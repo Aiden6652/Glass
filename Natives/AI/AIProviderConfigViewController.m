@@ -11,6 +11,7 @@
 #import "AiAPIClient.h"
 #import "BackgroundManager.h"
 #import "LauncherPreferences.h"
+#import "utils.h"   // ★ [HOST-BUG-A] 统一取词 localize()
 #import <objc/runtime.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -39,7 +40,7 @@ NS_ASSUME_NONNULL_END
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"提供商配置";
+    self.title = localize(@"ai.provider_config.title", @"提供商配置");   // ★ [HOST-BUG-A]
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.view.backgroundColor = [[UIColor labelColor] colorWithAlphaComponent:0.04];
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
@@ -52,6 +53,28 @@ NS_ASSUME_NONNULL_END
     [super viewWillAppear:animated];
     // 从编辑页返回后刷新（选中态 / 列表）
     [self.tableView reloadData];
+
+    // ★ [LAND-BUG] 本页会被「设置 ▸ AI ▸ 提供商配置」(LauncherPreferencesViewController:1167)
+    //   与 AI 会话页以模态 UINavigationController(root) 弹出；本页原先没有任何 navigationItem，
+    //   全屏模态下没有返回/关闭 ⇒ 退不出去。补一个左上「关闭」（pushed 进栈时不注入）。
+    UINavigationController *landBugNav = self.navigationController;
+    if (landBugNav.presentingViewController != nil && landBugNav.viewControllers.firstObject == self &&
+        self.navigationItem.leftBarButtonItem == nil) {
+        UIBarButtonItem *landBugCloseItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                                                                          target:self
+                                                                                          action:@selector(landBugCloseTapped)];
+        landBugCloseItem.accessibilityLabel = @"关闭";
+        self.navigationItem.leftBarButtonItem = landBugCloseItem;
+    }
+}
+
+- (void)landBugCloseTapped {
+    UINavigationController *nav = self.navigationController;
+    if (nav.presentingViewController) {
+        [nav dismissViewControllerAnimated:YES completion:nil];
+    } else {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 - (void)setupTable {
@@ -359,7 +382,7 @@ NS_ASSUME_NONNULL_END
 - (void)viewDidLoad {
     [super viewDidLoad];
     _isEditing = (self.provider != nil);
-    self.title = _isEditing ? @"编辑提供商" : @"新增提供商";
+    self.title = _isEditing ? localize(@"ai.provider_config.edit", @"编辑提供商") : localize(@"ai.provider_config.add", @"新增提供商");   // ★ [HOST-BUG-A]
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.view.backgroundColor = [[UIColor labelColor] colorWithAlphaComponent:0.04];
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];

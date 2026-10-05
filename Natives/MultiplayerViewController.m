@@ -174,6 +174,15 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
     // 重新隐藏导航栏黑条（pop 回根页面时）
     [self hideNavBarIfRoot];
 
+    // ★ [MP-BACK] pushed 呈现(栈里非根)：显式打开导航栏 —— 容器根页通常把导航栏藏了，
+    //   否则注入的关闭按钮(左上角 xmark)会被一起藏住 ⇒ 用户「进得去、出不来」。
+    if (self.navigationController &&
+        self.navigationController.viewControllers.count > 1 &&
+        self.navigationController.viewControllers.firstObject != self &&
+        self.navigationController.topViewController == self) {
+        self.navigationController.navigationBarHidden = NO;
+    }
+
     // 进入界面时重新应用背景效果（背景可能在其他界面被修改）
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
     self.tableView.backgroundColor = [UIColor clearColor];
@@ -240,6 +249,12 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         self.navigationController.viewControllers.firstObject == self &&
         self.navigationController.presentingViewController == nil) {
         self.navigationController.navigationBarHidden = NO;
+    }
+    // ★ [MP-BACK] pushed 被 pop 时恢复导航栏隐藏态(容器根页通常无导航栏)
+    if (self.navigationController &&
+        self.navigationController.viewControllers.count > 1 &&
+        self.navigationController.viewControllers.firstObject != self) {
+        self.navigationController.navigationBarHidden = YES;
     }
 }
 

@@ -30,16 +30,16 @@
         // 模型收不到任何工具定义，表现为 AI 完全不知道能调用工具。这里在单例 init 时自动注册。
         [AiToolBootstrapper registerBuiltinToolsIntoRegistry:self];
 
-        // 启动自检：把注册结果落盘到 Documents/AI/ai_tools_dump.txt，
-        // 用于定位「源码里有、运行时却没有」的工具缺失问题。
+        // ★ [GLASS] 启动自检：把注册结果落盘到 Documents/AI/ai_tools_dump.txt，
+        //   用于定位「源码里有、运行时却没有」的工具缺失问题。
         [self dumpToolRegistrationDiagnostics];
     }
     return self;
 }
 
-#pragma mark - 注册自检
+#pragma mark - ★ [GLASS] 注册自检
 
-/// 把已注册工具清单 + 各阶段到场情况 + 3e 工具类链接探测写入 Documents/AI/ai_tools_dump.txt
+/// 把已注册工具清单 + 各阶段到场情况 + 工具类链接探测写入 Documents/AI/ai_tools_dump.txt
 - (void)dumpToolRegistrationDiagnostics {
     NSMutableString *out = [NSMutableString string];
     NSArray<NSString *> *names = [self.tools.allKeys sortedArrayUsingSelector:@selector(compare:)];
@@ -52,44 +52,11 @@
         [out appendFormat:@"  %@  (permission=%ld)\n", n, (long)t.permission];
     }
 
-    // 分阶段到场检查
-    NSDictionary<NSString *, NSArray<NSString *> *> *stages = @{
-        @"3a 基础": @[@"list_instances", @"list_game_versions", @"read_latest_log",
-                      @"read_crash_report", @"match_known_errors", @"list_files",
-                      @"read_file", @"grep_files", @"write_file", @"edit_file",
-                      @"delete_file", @"ask"],
-        @"3b 资源": @[@"search_mods", @"search_resourcepacks", @"search_shaders",
-                      @"search_datapacks", @"search_modpacks", @"search_worlds",
-                      @"install_mod", @"install_resourcepack", @"install_shader",
-                      @"install_datapack", @"install_game_version", @"install_loader"],
-        @"enhance": @[@"read_logs", @"check_downloads", @"list_settings", @"get_setting",
-                      @"set_setting", @"todo_create", @"todo_list", @"todo_update",
-                      @"todo_delete", @"sleep", @"create_instance"],
-        @"3c 联网": @[@"fetch_url"],
-        @"3d 推送": @[@"github_set_token", @"github_push"],
-        @"3e 目录": @[@"list_roots", @"folder_request_access", @"folder_list_authorized",
-                      @"folder_revoke_access"],
-        @"3e 源码": @[@"github_tree", @"github_read_files", @"github_search_code"],
-    };
-    [out appendString:@"\n--- 分阶段到场检查 ---\n"];
-    for (NSString *stage in @[@"3a 基础", @"3b 资源", @"enhance", @"3c 联网", @"3d 推送", @"3e 目录", @"3e 源码"]) {
-        NSArray *expect = stages[stage];
-        NSMutableArray *missing = [NSMutableArray array];
-        for (NSString *n in expect) {
-            if (self.tools[n] == nil) [missing addObject:n];
-        }
-        if (missing.count == 0) {
-            [out appendFormat:@"  [OK]   %@（%lu 个全部在场）\n", stage, (unsigned long)expect.count];
-        } else {
-            [out appendFormat:@"  [缺失] %@ → 缺 %@\n", stage, [missing componentsJoinedByString:@", "]];
-        }
-    }
-
-    // 类存在性探测：确认 3e 相关类是否真的被链接进二进制
+    // 类存在性探测：确认相关工具类是否真的被链接进二进制
     [out appendString:@"\n--- 工具类链接探测（NSClassFromString）---\n"];
     NSArray<NSString *> *classes = @[@"AiFileTools", @"AiFolderAccessTool", @"AiGitHubTreeTool",
-                                     @"AiGitHubTool", @"AiWebFetchTool", @"AiInstancesTool",
-                                     @"AiAssetSearchTool", @"AiAssetInstallTool"];
+                                     @"AiGitHubTool", @"AiWebFetchTool", @"AiListToolsTool",
+                                     @"AiInstancesTool", @"AiAssetSearchTool", @"AiAssetInstallTool"];
     for (NSString *cn in classes) {
         Class c = NSClassFromString(cn);
         [out appendFormat:@"  %-24s %@\n", cn.UTF8String, c ? @"存在" : @"不存在"];
@@ -116,7 +83,7 @@
     NSLog(@"[AiToolRegistry] 工具清单：%@", [names componentsJoinedByString:@", "]);
 }
 
-#pragma mark - 文本工具清单（prompt 驱动回退方案）
+#pragma mark - ★ [GLASS] 文本工具清单（prompt 驱动回退方案）
 
 /// 生成给模型看的纯文本工具清单（名称 + 完整说明）。
 /// 用于「模型不支持原生 tool_calls」或「工具 schema 未送达」时，
@@ -265,7 +232,7 @@
     if (!tool) {
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                // 未知工具时把当前可用工具名一并返回，便于模型自我纠正
+                // ★ [GLASS] 未知工具时把当前可用工具名一并返回，便于模型自我纠正
                 NSArray *avail = [self allToolNames];
                 NSString *hint = [NSString stringWithFormat:@"未知工具 %@。当前可用工具（%lu 个）：%@",
                                   name ?: @"", (unsigned long)avail.count,

@@ -13,6 +13,15 @@ BOOL getPrefBool(NSString *key);
 float getPrefFloat(NSString *key);
 NSInteger getPrefInt(NSString *key);
 
+/// ★ [UI-LAYOUT-MIGRATE] UI 布局唯一解析函数：@"vs"（标准）或 @"card"（卡片）。
+/// 按物理机型判定，不读遗留的 general.ui_layout（该键已被启动迁移纠正）。
+/// 所有需要"当前布局"的调用方都应走这里，避免各读各的。
+NSString *ameResolveUILayout(void);
+
+/// ★ [TC-MOVEVIEW-MIGRATE] 「视角摇晃/移动视角」唯一解析函数。
+/// 功能已移除，恒返回 NO（存量 control.mod_touch_moveview_enable=enable 已被启动迁移写回）。
+BOOL ameResolveTouchMoveViewEnabled(void);
+
 void setPrefObject(NSString *key, id value);
 void setPrefBool(NSString *key, BOOL value);
 void setPrefFloat(NSString *key, float value);
@@ -32,6 +41,14 @@ UIColor *accentColor(void);
 #define ACCENT_COLOR_DEFAULT_HEX @"429CF5"
 
 BOOL getEntitlementValue(NSString *key);
+
+/// Task141：启动内存（JVM Xmx）的单一事实源。
+/// JavaLauncher 的 launchJVM 与 SurfaceViewController 的 updateJetsamControl
+/// 必须读同一个值 —— 两处错位会让 Jetsam 上限低于"Xmx + native 开销"，
+/// 系统在 JVM 启动阶段直接 SIGKILL（不可捕获，日志表现为进程凭空消失、无崩溃栈）。
+/// 本函数同时按设备物理内存收敛上限，保证 jetsam 上限（allocmem + 1024）
+/// 给系统与其它进程留出余量。设 AMETHYST_MEM_NO_CLAMP=1 可关闭收敛。
+int ame141_currentLaunchAllocMem(void);
 
 UIEdgeInsets getDefaultSafeArea();
 CGRect getSafeArea(CGRect screenBounds);

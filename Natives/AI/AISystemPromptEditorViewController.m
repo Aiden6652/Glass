@@ -9,6 +9,7 @@
 #import "AiSettings.h"
 #import "BackgroundManager.h"
 #import "LauncherPreferences.h"
+#import "utils.h"   // ★ [HOST-BUG-A] 统一取词 localize()
 
 @interface AISystemPromptEditorViewController () <UITextViewDelegate>
 @property (nonatomic, strong) UITextView *textView;
@@ -17,9 +18,27 @@
 
 @implementation AISystemPromptEditorViewController
 
+// ★ [LAND-BUG] 本页由设置页以模态 UINavigationController(root) 弹出，左上原本是「恢复默认」、
+//   右上是「保存」，没有关闭入口 ⇒ 不想保存时退不出去。模态时在最左补一个「关闭」。
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    UINavigationController *nav = self.navigationController;
+    if (nav.presentingViewController == nil || nav.viewControllers.firstObject != self) return;
+    if (self.navigationItem.leftBarButtonItems.count >= 2) return;   // 已注入
+    UIBarButtonItem *landBugCloseItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                                                                      target:self
+                                                                                      action:@selector(landBugCloseTapped)];
+    landBugCloseItem.accessibilityLabel = @"关闭";
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray arrayWithObject:landBugCloseItem];
+    if (self.navigationItem.leftBarButtonItem) {
+        [items addObject:self.navigationItem.leftBarButtonItem];   // 保留「恢复默认」
+    }
+    self.navigationItem.leftBarButtonItems = items;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"系统提示词";
+    self.title = localize(@"ai.system_prompt.title", @"系统提示词");   // ★ [HOST-BUG-A]
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.view.backgroundColor = [[UIColor labelColor] colorWithAlphaComponent:0.04];
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
@@ -105,7 +124,22 @@
 - (void)saveAction {
     NSString *text = [self.textView.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     [[AiSettings sharedSettings] setSystemPrompt:text];
-    [self.navigationController popViewControllerAnimated:YES];
+    // ★ [LAND-BUG] 本页只由设置页以模态 UINavigationController(root) 弹出(LauncherPreferencesViewController:1208)，
+    //   此时 pop 是空操作 ⇒ 保存后页面不退、也无其他出口。改走 dismiss（与 ResourcePacksManagerViewController.closeTapped 同款兼容写法）。
+    if (self.navigationController && self.navigationController.viewControllers.firstObject != self) {
+        [self.navigationController popViewControllerAnimated:YES];
+    } else {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
+}
+
+- (void)landBugCloseTapped {
+    UINavigationController *nav = self.navigationController;
+    if (nav.presentingViewController) {
+        [nav dismissViewControllerAnimated:YES completion:nil];
+    } else {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 @end

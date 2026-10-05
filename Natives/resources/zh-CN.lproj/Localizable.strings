@@ -201,6 +201,7 @@
 "preference.detail.modLoaderSource" = "Fabric / Forge / NeoForge 的 meta、maven 与安装器下载策略。镜像优先使用 BMCLAPI 镜像。";
 "preference.title.mirror_policy-official_first" = "官方优先";
 "preference.title.mirror_policy-mirror_first" = "镜像优先";
+"preference.title.mirror_policy-auto" = "自动（大陆镜像优先）";
 "preference.title.mod_mirror" = "模组镜像源";
 "preference.detail.mod_mirror" = "选择模组/光影/资源包/数据包/整合包/世界的 API 与文件下载镜像源。MCIM镜像源（mod.mcimirror.top）提供国内加速，兼容 Modrinth 和 CurseForge 接口。";
 "preference.title.mod_mirror-official" = "官方源";
@@ -311,12 +312,27 @@
 "preference.detail.recording_hide" = "在截图和屏幕录制时隐藏控制，但它们仍然在屏幕上可见。";
 "preference.title.gesture_mouse" = "鼠标手势";
 "preference.detail.gesture_mouse" = "启用手势，例如点击放置方块、按住破坏方块、用两根手指转动视角";
+"preference.title.bt_pointer_enable" = "蓝牙鼠标 / 触控板";
+"preference.detail.bt_pointer_enable" = "把蓝牙鼠标或触控板当作真实指针使用（移动 / 左键 / 右键）。仅在系统未上报 GameController 鼠标时接管，因此不会与触控或硬件鼠标冲突。iPhone 需先在 设置→辅助功能→触控→辅助触控 中开启“指针设备”；iPad 可直接使用。";
 "preference.title.gesture_hotbar" = "快捷栏手势";
 "preference.detail.gesture_hotbar" = "启用手势，例如点击快捷栏物品槽、双手交换物品、丢弃物品";
 "preference.title.disable_haptics" = "禁用屏幕触觉反馈";
 "preference.detail.disable_haptics" = "关闭游戏中的触觉反馈（震动）效果。";
 "preference.title.press_duration" = "长按延迟（毫秒）";
 "preference.detail.press_duration" = "修改长按摧毁方块、丢弃物品的触发时长。";
+"preference.title.tap_click_enable" = "轻触即左键";
+"preference.detail.tap_click_enable" = "轻触一下即合成一次完整左键单击。关闭后恢复旧行为（游戏内轻触=右键放置、长按=左键破坏）。";
+"preference.title.tap_click_duration" = "轻触时长上限（毫秒）";
+"preference.detail.tap_click_duration" = "按住时长小于该值才判定为轻触。";
+"preference.title.tap_click_move" = "轻触位移上限（点）";
+"preference.detail.tap_click_move" = "按下到抬起的移动距离小于该值才判定为轻触；超过仍用于拖动旋转视角。";
+"preference.title.tap_click_mode" = "轻触发键方式";
+"preference.detail.tap_click_mode" = "自动：按准星目标判定（实体/打空→左键攻击挖掘；功能方块→右键打开；手持方块→右键放置）。左键/右键：恒发该键。";
+"preference.title.tap_click_mode-auto" = "自动（按目标）";
+"preference.title.tap_click_mode-left" = "恒左键";
+"preference.title.tap_click_mode-right" = "恒右键";
+"preference.title.tap_click_button_right" = "轻触合成为右键";
+"preference.detail.tap_click_button_right" = "旧键（兼容）。开启＝强制轻触为右键，等同「轻触发键方式＝恒右键」。";
 "preference.title.button_scale" = "屏幕按钮缩放 (%)";
 "preference.detail.button_scale" = "如果按钮过小则放大按钮，通常平板用户需要更改此选项。";
 "preference.title.mouse_scale" = "鼠标缩放 (%)";
@@ -651,6 +667,14 @@
 "launch.cancel_confirm_message" = "取消启动将终止当前的游戏加载流程并返回启动器。";
 "launch.cancel_confirm_yes" = "确认取消";
 "launch.cancel_confirm_no" = "继续等待";
+"launch.progress.stage.prepare_env" = "正在准备环境...";
+"launch.progress.stage.jit_ready" = "正在准备 JIT...";
+"launch.progress.stage.renderer" = "正在解析渲染器与图形 API...";
+"launch.progress.stage.runtime" = "正在加载运行环境(Java / 内存)...";
+"launch.progress.stage.args_ready" = "正在组装启动参数...";
+"launch.progress.stage.jvm_starting" = "正在启动 Java 虚拟机...";
+"launch.progress.stage.waiting_first_frame" = "正在等待游戏画面...";
+"launch.progress.stage.completed" = "启动完成";
 
 // AI Fix Feature
 "ai.fix.conversation" = "对话窗口";
@@ -1346,7 +1370,7 @@
 "i18n_str_523" = "整合包已保存到：\n%@";
 "i18n_str_524" = "分享";
 "i18n_str_525" = "导入已取消";
-"i18n_str_526" = "文件不存在（该功能为半成品，如遇此问题请不要使用该功能）";
+"i18n_str_526" = "文件不存在";
 "i18n_str_527" = "无法打开压缩文件";
 "i18n_str_528" = "无效的整合包格式。缺少 modrinth.index.json、mmc-pack.json、manifest.json 或 .minecraft 目录结构";
 "i18n_str_529" = "无法解析 MCBBS packmeta/manifest";
@@ -1354,7 +1378,7 @@
 "i18n_str_531" = "mmc-pack.json 缺少 components 数组";
 "i18n_str_532" = "无法解析 modrinth.index.json";
 "i18n_str_533" = "无法解析 manifest.json";
-"i18n_str_534" = "整合包文件不存在（该功能为半成品，如遇此问题请不要使用该功能）";
+"i18n_str_534" = "整合包文件不存在";
 "i18n_str_537" = "正在下载 %lu 个 mod 文件";
 "i18n_str_540" = "%@ (游戏文件)";
 "i18n_str_541" = "游戏文件下载失败";
@@ -1735,6 +1759,8 @@
 "i18n_str_1208" = "暂无可用版本";
 "i18n_str_1209" = "加载失败，请检查网络";
 "i18n_str_1210" = "加载失败：%@";
+// ★ [NEOFORGE-FIX] NeoForge 尚未为该 Minecraft 版本发版（诚实告知，不谎报版本）
+"neoforge.no_version_for_mc" = "Minecraft %@ 暂无 NeoForge 适配版本";
 "i18n_str_1211" = "选择安装方式";
 "i18n_str_1212" = "原版 (Vanilla)";
 "i18n_str_1213" = "纯净 Minecraft，不包含任何模组加载器";
@@ -1902,6 +1928,8 @@
 "i18n_str_2017" = "毛玻璃";
 "i18n_str_2018" = "半宽";
 "i18n_str_2019" = "紧凑";
+"i18n_str_9101" = "竖长";
+"i18n_str_9102" = "大块";
 "i18n_str_2020" = "切换为全宽";
 "i18n_str_2021" = "隐藏此磁贴";
 "i18n_str_2022" = "紫色";
@@ -1954,12 +1982,103 @@
 "preference.auto" = "自动";
 "preference.auto_select" = "自动选择";
 
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "原版 %@ 安装失败。\n\n%@ 未安装，请检查网络后重试。";
+"i18n_str_jit26_pending" = "JIT：已启用（启动时自动附加）";
+"jit.timeout_retry_msg" = "等待 JIT 超时（120 秒），JIT 工具可能未响应。点重试可再试一次，也可手动附加调试器后重试。";
+"jit.retry" = "重试";
 
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "玻璃质感";
-"i18n_str_2069" = "关闭";
-"i18n_str_2070" = "标准";
-"i18n_str_2071" = "强";
-"i18n_str_2072" = "液态玻璃";
+// Task 134: JIT 开启工具选择（参照 Air 移植）
+"preference.debug.jit_enabler.auto" = "自动（推荐）";
+"preference.debug.jit_enabler.stikjit" = "StikDebug / StikJIT";
+"preference.debug.jit_enabler.sidestore" = "SideStore";
+"preference.debug.jit_enabler.stosdebug" = "StosDebug";
+"preference.debug.jit_enabler.jitstreamer" = "JitStreamer-EB";
+"preference.debug.jit_enabler.trollstore" = "TrollStore";
+"preference.debug.jit_enabler.manual" = "手动（自行附加调试器）";
+"preference.title.jit_enabler" = "JIT 开启工具";
+"preference.detail.jit_enabler" = "选择用于开启 JIT 的工具。没有安装 StikDebug 的用户请改选 SideStore、StosDebug、JitStreamer-EB 或 TrollStore，否则点击启动可能没有任何反应。默认自动：按设备状态依次尝试 TrollStore、StikDebug、SideStore。";
+"preference.title.jit26_script_disable" = "禁用 iOS 26 JS 脚本 JIT";
+"preference.detail.jit26_script_disable" = "启动游戏时不再向 JIT 工具发送 UniversalJIT26.js 脚本（纯调试器附加式 JIT）。仅当你的工具不支持脚本、或脚本导致异常时才需要开启；依赖系统级内存映射的设备（TXM）开启后可能无法启动游戏。";
+"i18n_str_jit26_not_ready" = "JIT26 调试器未就绪：JIT 断点无人应答。请确认已在 StikDebug 中指定 Universal JIT 脚本并重新开启 JIT，然后再点击启动。";
+
+// 启动器检查更新（ZL2 风格弹窗 + 启动自动检查）
+"update_dialog.title" = "发现新版本";
+"update_dialog.version_from" = "%@（当前：%@）";
+"update_dialog.published_at" = "发布于 %@";
+"update_dialog.ignore" = "忽略此版本";
+"update_dialog.later" = "稍后";
+"update_dialog.update" = "更新";
+"preference.title.auto_check_update" = "启动时检查更新";
+"preference.detail.auto_check_update" = "启动启动器时自动检查 GitHub Releases。每小时最多检查一次，被你选择忽略的版本不会再提示。";
+
+// ★ [GLASSUI] glass effect (switch + strength slider)
+"preference.title.glass_effect" = "玻璃效果";
+"preference.title.glass_strength" = "玻璃强度";
+
+// ★ [GLASS-STYLE] 界面风格分层(原生 / 系统液态玻璃)
+//   iOS <  26 ⇒ 原生(只用系统材质,不再纯代码画玻璃)
+//   iOS >= 26 ⇒ 自动默认液态玻璃(调系统 UIGlassEffect)
+"preference.title.glass_style" = "界面风格";
+"preference.style.auto" = "自动";
+"preference.style.native" = "原生";
+"preference.style.liquid" = "液态玻璃";
+"preference.style.footer.supported" = "「自动」跟随系统：iOS 26 及以上使用液态玻璃，更早的版本使用原生风格。";
+"preference.style.footer.unsupported" = "当前系统低于 iOS 26，仅支持原生风格。启动器会改用系统原生材质，不再自绘玻璃。";
+"preference.style.footer.native" = "已使用原生风格：不叠加自绘玻璃质感，下方的玻璃开关与强度暂不可用。";
+// ★ [GLASS-LIQUID] 纯系统材质 + 可选自绘高光
+"preference.title.glass_handdrawn" = "自绘高光";
+"preference.style.footer.pure" = "默认仅用系统材质：材质完全由系统提供（iOS 26 及以上为液态玻璃），不叠加任何自绘玻璃。";
+"preference.style.footer.handdrawn" = "已开启自绘高光：在系统玻璃之上额外叠加描边 / 内高光（可选）。";
+
+// ★ [LANG-SWITCH] 启动器界面语言切换(跟随系统 + 自动枚举 .lproj)
+"preference.title.launcher_language" = "语言";
+"preference.lang.title" = "语言";
+"preference.lang.follow_system" = "跟随系统";
+"preference.lang.section.system" = "系统";
+"preference.lang.section.available" = "可用语言";
+"preference.lang.search_placeholder" = "搜索语言";
+"preference.lang.restart_hint.title" = "语言已切换";
+"preference.lang.restart_hint.message" = "界面已按所选语言重新加载。";
+
+// ★ [JIT-WAIT] 主启动 JIT 等待/调起失败提示(launchJVM 失败分支 + ame139_requestJIT)
+"jit.wait.auto" = "正在等待 JIT 就绪。请用你的 JIT 工具为本 App 启用 JIT（TrollStore、StikDebug、SideStore / SideJIT、JitStreamer 等），然后回到启动器。最长等待 30 秒……";
+"jit.wait.manual" = "请现在到你的 JIT 工具里为本 App 启用 JIT。最长等待 30 秒……";
+"jit.wait.trollstore" = "请在 TrollStore 里为本 App 启用 JIT，然后回到启动器。最长等待 30 秒……";
+"jit.wait.stikdebug" = "请在 StikDebug 里为本 App 启用 JIT，然后回到启动器。最长等待 30 秒……";
+"jit.wait.sidestore" = "请在 SideStore / SideJIT 里为本 App 启用 JIT，然后回到启动器。最长等待 30 秒……";
+"jit.wait.jitstreamer" = "请通过 JitStreamer 为本 App 启用 JIT，然后回到启动器。最长等待 30 秒……";
+"jit.wait.stosdebug" = "请用 StosDebug 为本 App 启用 JIT，然后回到启动器。最长等待 30 秒……";
+"jit.wait.abort.title" = "JIT 不可用";
+"jit.wait.timeout.message" = "已尝试为你调起 JIT 使能工具，但 30 秒内未就绪，启动已优雅中止。请为本 App 启用 JIT 后重试（也可在设置里切换 JIT 获取方式）。";
+"jit.wait.timeout.foreground.message" = "已为你调起 JIT 使能工具，但回到前台后仍未检测到 JIT（前台活跃等待共 30 秒、总计最多 180 秒），启动已优雅中止。请为本 App 启用 JIT 后重试（也可在设置里切换 JIT 获取方式）。";
+"jit.wait.blocked.message" = "JIT 调试器未响应（brk 无人服务）。请确认已用带 UniversalJIT26 脚本、且调试器保持附加的方式启用 JIT 后再启动。";
+"jit.wait.missing.tool" = "未检测到 JIT 使能工具。请安装或确认已安装 %@，或在设置里更换 JIT 获取方式后重试。";
+"jit.wait.missing.generic" = "未检测到 JIT 使能工具。请安装一个 JIT 工具（TrollStore、StikDebug、SideStore / SideJIT、JitStreamer 等），或在设置里更换 JIT 获取方式后重试。";
+
+/* ★ [I18N] launcher tab titles / language picker keys (added by I18N fix) */
+"tab.home" = "主页";
+"tab.download" = "下载";
+"tab.ai" = "AI";
+"tab.instances" = "实例";
+"tab.settings" = "设置";
+
+
+/* ★ [I18N] key-set alignment vs zh-Hans base; English placeholder pending translation */
+"preference.detail.debug_always_attached_jit" = "Enable this if your mods require loading .dylib at runtime. When this is on, StikDebug's PiP should not be closed during gameplay. Requires Universal Script enabled";
+"preference.title.renderer.debug.vgpu" = "VGPU (<=1.12) - gl4es fork, enhanced shader syntax, EXPERIMENTAL";
+"preference.title.debug_universal_script_jit" = "Use Universal StikDebug Script";
+"preference.title.debug_always_attached_jit" = "Keep attached to StikDebug";
+"preference.title.renderer.debug.mithril" = "Mithril (1.17+) - OpenGL 3.3 Core via Vulkan/Metal, EXPERIMENTAL";
+"preference.title.renderer.release.mg" = "MobileGlues";
+"login.warn.title.ios19_jitdead" = "Amethyst is not supported on iOS 26 or later.";
+"preference.title.renderer.debug.sfpew" = "SFPEW (<=1.16.x) - fixed-function emulation, backend defaults to MobileGlues, EXPERIMENTAL";
+"preference.title.renderer.debug.mobilegl" = "MobileGL Vulkan (1.17+) - OpenGL 3.3 Core, EXPERIMENTAL";
+"preference.title.renderer.debug.mobilegl_gles" = "MobileGL GLES (1.17+) - OpenGL 3.3 Core via OpenGL ES, EXPERIMENTAL";
+"login.warn.message.ios19_jitdead" = "Due to changes in iOS that inhibit the ability to enable JIT, Amethyst cannot work in its current state and requires heavy research to find a new path forward.
+Pressing OK will close the app.";
+"preference.title.renderer.debug.virgl" = "VirGL (<=26.2) - Mesa virgl guest + vtest server, EXPERIMENTAL";
+"preference.title.renderer.debug.metal" = "Metal (metallum)";
+"preference.title.renderer.debug.gl4eszl2" = "GL4ES (ZL2 classic) - string-rewrite GLSL to ESSL, EXPERIMENTAL";
+/* ★ [STALE-TITLE] 补齐上一轮新增的分组标题键：此前仅 en/zh-Hans 有 ⇒ 本语言回退英文，与其它分组标题(中文)不一致 */
+"preference.group.runtime" = "内存与性能";
+"preference.group.java" = "Java 与启动参数";
+

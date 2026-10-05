@@ -171,13 +171,3 @@
 "preference.title.debug_auto_correction" = "Corrección automática";
 "preference.detail.debug_auto_correction" = "Activar corrección automática al escribir texto en el juego.";
 "preference.title.debug_show_layout_bounds" = "Mostrar límites de diseño";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "No se pudo instalar la versión vanilla %@.\n\n%@ no se ha instalado. Comprueba tu conexión de red e inténtalo de nuevo.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Estilo de cristal";
-"i18n_str_2069" = "Desactivado";
-"i18n_str_2070" = "Estándar";
-"i18n_str_2071" = "Fuerte";
-"i18n_str_2072" = "Cristal líquido";

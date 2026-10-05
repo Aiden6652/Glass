@@ -445,6 +445,12 @@ static const NSUInteger kMCStageIndexVerify = 5;
             artifact = [[NSMutableDictionary alloc] init];
             NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
             NSArray *libParts = [name componentsSeparatedByString:@":"];
+            // ★ [DEMINE] 原为 libParts[2] 直接下标：name 只有 1 个冒号(2 段，非标准 Maven
+            //   三段坐标)时越界 NSRangeException 崩 App。缺段则跳过该库(不再生成 artifact)。
+            if (libParts.count < 3) {
+                NSLog(@"[DEMINE] skip artifact generation for non-3-part lib name: %@", name);
+                continue;
+            }
             artifact[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], libParts[1], libParts[2]];
             artifact[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifact[@"path"]];
             artifact[@"sha1"] = library[@"checksums"][0];

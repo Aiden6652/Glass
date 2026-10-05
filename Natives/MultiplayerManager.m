@@ -79,10 +79,14 @@ static NSString * const kMultiplayerEnabledKey = @"multiplayer.enabled";
 static NSString * const kDefaultMCPort = @"25565";
 
 /// 分享文本中的各种前缀标记（用于生成和解析）
-static NSString * const kShareHeaderLine = localize(@"i18n_str_599", nil);
-static NSString * const kShareRoomNamePrefix = localize(@"i18n_str_600", nil);
-static NSString * const kShareNetworkIdPrefix = localize(@"i18n_str_601", nil);
-static NSString * const kShareServerAddressPrefix = localize(@"i18n_str_602", nil);
+/// ★ [MP-RESTORE] 文件作用域常量**不能**用 localize() 做初始化：localize() 是函数调用，不是
+///   编译期常量 ⇒ clang 报 "initializer element is not a compile-time constant"（本文件被
+///   注释出源列表期间没编译，恢复登记后立刻暴露）。改用宏：调用点按值展开，语言切换后重新
+///   取词的行为与内联 localize() 完全一致，且不改任何调用点。
+#define kShareHeaderLine           localize(@"i18n_str_599", nil)
+#define kShareRoomNamePrefix       localize(@"i18n_str_600", nil)
+#define kShareNetworkIdPrefix      localize(@"i18n_str_601", nil)
+#define kShareServerAddressPrefix  localize(@"i18n_str_602", nil)
 
 /// SOCKS5 代理默认端口（与 SOCKS5Proxy.h 中的 SOCKS5ProxyDefaultPort 一致）
 static uint16_t const kMultiplayerDefaultSOCKS5Port = 1080;
@@ -314,7 +318,7 @@ typedef NS_ENUM(NSInteger, MultiplayerErrorCode) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _serializationQueue = dispatch_queue_create("com.angelaura.multiplayer.serialization", DISPATCH_QUEUE_SERIAL);
+        _serializationQueue = dispatch_queue_create("com.glass.multiplayer.serialization", DISPATCH_QUEUE_SERIAL);
         _stateLock = [[NSLock alloc] init];
         _internalRooms = [[NSMutableArray alloc] init];
         _currentRoom = nil;

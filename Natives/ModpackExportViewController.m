@@ -157,6 +157,7 @@
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
     card.layer.cornerRadius = 14;
+    card.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     card.layer.masksToBounds = YES;
 
     UILabel *titleLabel = [[UILabel alloc] init];
@@ -402,6 +403,7 @@
     self.exportButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     self.exportButton.backgroundColor = [UIColor systemBlueColor];
     self.exportButton.layer.cornerRadius = 12;
+    self.exportButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.exportButton.layer.masksToBounds = YES;
     self.exportButton.tintColor = [UIColor whiteColor];
     [self.exportButton addTarget:self action:@selector(startExport) forControlEvents:UIControlEventTouchUpInside];
@@ -566,6 +568,7 @@
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
     card.layer.cornerRadius = 16;
+    card.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     card.layer.masksToBounds = YES;
     [overlay addSubview:card];
 

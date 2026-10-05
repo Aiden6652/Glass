@@ -113,9 +113,15 @@
     @try {
         [button update];
     } @catch (NSException *exception) {
+        // ★ [DEMINE] 原为 `@throw exception` 重抛：update 内可能抛异常(例如用户把
+        //   按钮位置编辑成非法动态表达式，NSExpression 解析失败)。异常在此被重抛后
+        //   变成【未捕获异常】⇒ NSSetUncaughtExceptionHandler ⇒ handle_fatal_exit
+        //   ⇒ 整个 App 被 SIGABRT 杀死(平时不发作，一编辑就越界崩)。
+        //   位置已回滚到编辑前，重抛只剩“崩”这一个效果 ⇒ 降级为记日志并继续，
+        //   正常路径(update 不抛)行为完全不变。
         button.properties[@"dynamicX"] = to[@"dynamicX"] = from[@"dynamicX"];
         button.properties[@"dynamicY"] = to[@"dynamicY"] = from[@"dynamicY"];
-        @throw exception;
+        NSLog(@"[DEMINE] doUpdateButton: swallowed NSException from [button update]: %@", exception);
     }
 }
 

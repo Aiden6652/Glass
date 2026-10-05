@@ -54,13 +54,3 @@
 "preference.title.auto_ram" = "Auto RAM";
 "preference.detail.auto_ram" = "Membenarkan pelaras RAM automatik";
 "preference.detail.allocated_memory" = "Mengawal berapa banyak memori yang diberikan kepada Minecraft";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Failed to install vanilla %@.\n\n%@ was not installed. Please check your network and try again.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Gaya kaca";
-"i18n_str_2069" = "Matikan";
-"i18n_str_2070" = "Standard";
-"i18n_str_2071" = "Kuat";
-"i18n_str_2072" = "Kaca cecair";

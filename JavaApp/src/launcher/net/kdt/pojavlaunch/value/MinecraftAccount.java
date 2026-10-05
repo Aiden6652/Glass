@@ -27,15 +27,9 @@ public class MinecraftAccount
 
     public static MinecraftAccount parse(String content) throws JsonSyntaxException {
         MinecraftAccount account = Tools.GLOBAL_GSON.fromJson(content, MinecraftAccount.class);
-        // 修复：优先使用账号 JSON 中保存的 accessToken（微软登录后 token 会随账号一起写入 JSON）。
-        // 仅当 JSON 里没有 token 时，才回退到 Keychain 读取（JNI），避免 Keychain 链路
-        // （JNI abort / nil 崩溃 / Keychain 写入失败）导致 token 丢失而离线、无皮肤。
-        if ((account.accessToken == null || account.accessToken.length() == 0
-                || account.accessToken.equals("0")) && account.xuid != null) {
-            String tk = getAccessTokenFromKeychain(account.xuid);
-            if (tk != null && !tk.isEmpty()) {
-                account.accessToken = tk;
-            }
+        // Read access token from keychain
+        if (account.xuid != null) {
+            account.accessToken = getAccessTokenFromKeychain(account.xuid);
         }
         return account;
     }

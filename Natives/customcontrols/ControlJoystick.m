@@ -132,7 +132,9 @@ NSMutableDictionary* createButton(NSString* name, int* keycodes, NSString* dynam
 
     static char lastDirection = -2;
     char direction = -1;
-    if (xValue != 0 && yValue != 0) {
+    // Flux 同款修复：沿轴正推时必有一分量为 0，要求两分量都非零会把四正方向
+    // 误判为回中。这里测的是"偏离中心"，任一分量非零即成立。
+    if (xValue != 0 || yValue != 0) {
         CGFloat degree = atan2f(yValue, xValue) * (180.0 / M_PI);
         if (degree < 0) {
             degree += 360;
@@ -199,7 +201,12 @@ NSMutableDictionary* createButton(NSString* name, int* keycodes, NSString* dynam
 }
 
 - (void)update {
-    NSAssert(self.superview != nil, @"should not be nil");
+    // ★ [DEMINE] NSAssert 在发布包中仍生效(未定义 NS_BLOCK_ASSERTIONS)：摇杆脱离
+    //   父视图后的一次 update 会崩整个 App。降级为记日志并跳过(正常路径不变)。
+    if (self.superview == nil) {
+        NSLog(@"[DEMINE] ControlJoystick -update called with nil superview; skipping");
+        return;
+    }
 
     self.displayInGame = [self.properties[@"displayInGame"] boolValue];
     self.displayInMenu = [self.properties[@"displayInMenu"] boolValue];

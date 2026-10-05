@@ -16,29 +16,24 @@
 #import "ModpackImportViewController.h"
 #import "LauncherPrefGameDirViewController.h"
 #import "CustomControlsViewController.h"
-// ZeroTier/Terracotta 联机暂时移除（排查启动崩溃）
-// #import "MultiplayerViewController.h"
-// #import "TerracottaViewController.h"
-// #import "TerracottaManager.h"
-// #import "TerracottaBridge.h"
+// ★ [MP-RESTORE] 联机恢复
+#import "MultiplayerViewController.h"
+#import "TerracottaViewController.h"
+#import "TerracottaManager.h"
+#import "TerracottaBridge.h"
 #import "AccountListViewController.h"
 #import "AI/AIViewController.h"
 #import "AI/AiSessionStore.h"
-#import "GlassTheme.h"
-#import "GlassEffectView.h"
-
-// ===== Glass 主题动效 =====
-// 页面切换与启动动效的全部参数集中在 GlassTheme 中，本文件只负责施加动画。
-// 设计要点（踩坑记录）：
-//   1. 一律用 CGAffineTransform 而非 frame —— frame 与 Auto Layout 冲突会打架。
-//   2. 退场 VC 的 transform/alpha 必须在 completion 中复位，否则该 VC 被复用时会带残留状态。
-//   3. 新 VC 的约束必须在动画开始前已激活，否则 bounds 为 0，浮入距离算成 0。
+#import "GlassTheme.h"   // ★ [GLASS] 启动浮入动效参数
 
 // 布局常量（iPad 基准值；iPhone 上通过 LauncherRootLayoutWidth 适配后会变窄）
 static const CGFloat kSidebarWidthPad = 70.0;      // iPad 左侧边栏宽度
 static const CGFloat kSidebarWidthPhone = 56.0;    // iPhone 左侧边栏宽度（仅图标）
 static const CGFloat kRightPanelWidthPad = 220.0;  // iPad 右侧面板宽度
 static const CGFloat kRightPanelWidthPhone = 168.0; // iPhone 右侧面板宽度（保证按钮文字可读）
+// ★ [ROT-FIX] 顶栏(工具条)兜底宽度:6 按钮×56 + 5 间距×8 = 376(与菜单紧凑形态一致);
+//   菜单子 VC 就绪后由 preferredTopBarWidth 覆盖。
+static const CGFloat kAmeTopBarFallbackWidth = 376.0;
 
 /// 检测物理设备是否为 iPhone（不受 debug.debug_ipad_ui 的 idiom hook 影响）。
 /// UIKit+hook.m 会把 idiom 强制改成 Pad，导致 trait.userInterfaceIdiom 不可靠。
@@ -60,6 +55,43 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     return kRightPanelWidthPad;
 }
 
+// ★ [HOST-BUG-B] 同类入口统一落地:目标页本来就是某个标签的页(其根页即该页)
+//   ⇒ 切到那个标签并（可选）回根,而不是 setContentViewController: 把【主页内容区】整体换掉。
+//   后者会让底栏停留原标签、新页又成了另一栈的根 ⇒ 用户报「进去了但底栏没切、返回不了主页」(串台)。
+//   @return YES = 已用标签栏处理完(调用方直接 return);NO = 不在标签栏(老流程),回退原实现。
+static BOOL AmeHomeSwitchToTab(UIViewController *host, NSInteger tabIndex, BOOL popToRoot) {
+    UITabBarController *tbc = host.tabBarController;
+    if (![tbc isKindOfClass:[UITabBarController class]]) return NO;
+    if (tabIndex < 0 || tabIndex >= (NSInteger)tbc.viewControllers.count) return NO;
+    UIViewController *tabVC = tbc.viewControllers[(NSUInteger)tabIndex];
+    if (![tabVC isKindOfClass:[UINavigationController class]]) return NO;
+    tbc.selectedIndex = tabIndex;                       // 切标签(只动标签区,不换任何页面内容)
+    if (popToRoot) {
+        [(UINavigationController *)tabVC popToRootViewControllerAnimated:YES];
+    }
+    return YES;
+}
+
+// ★ [PORTRAIT-FIX] 竖屏布局常量。
+//   竖屏形态：顶栏(原左栏)贴安全区顶部横排一条 ⇒ 内容区吃满剩余宽度 ⇒
+//   右栏(头像/启动)收成【底部一张卡】(竖屏再让它占 168pt 横带会把内容挤成一条缝)。
+static const CGFloat kPortraitOuterMargin     = 14.0;   // 竖屏屏边留白(与 Card 布局 kE1MarginPortrait 同一语言)
+static const CGFloat kPortraitTopBarHeight    = 0.0;    // ★ [ROOTTAB] 底栏已转到根 UITabBarController ⇒ 这里不再留条(0)
+// ★ [NORIGHT] 右栏卡下线后,下面两个常量已无人引用 —— 标 __unused 保留原值备查(消掉"未使用变量"告警)。
+static const CGFloat kPortraitGap __unused            = 10.0;   // (原)顶栏 ↔ 内容 ↔ 底部卡 间距
+static const CGFloat kPortraitRightPanelMinH __unused = 300.0;   // (原)竖屏底部卡最小高
+// ★ [SYS-TABBAR] 顶栏圆角常量已不再使用:顶部工具栏改为系统 UITabBar 后,
+//   工具条圆角/玻璃形状由系统自己决定(容器上画圆角会把玻璃裁坏)。
+//   保留定义并标 __unused,方便将来回退/对照,且不产生"未使用变量"告警。
+static const CGFloat kPortraitTopBarCorner __unused = 14.0;   // (原)竖屏顶栏圆角
+static const CGFloat kPortraitCardCorner      = 16.0;   // 竖屏底部卡圆角(与横屏右栏保持一致)
+
+// ★ [ROT-FIX] 菜单 VC 顶栏内容宽度(实现于 LauncherMenuViewController.m)。
+//   在 RootVC 侧用分类声明，免改头文件；运行时再 respondsToSelector: 保护。
+@interface LauncherMenuViewController (RotFixWidth)
+- (CGFloat)preferredTopBarWidth;
+@end
+
 @interface LauncherRootViewController ()
 
 @property(nonatomic, strong) UIView *sidebarContainer;
@@ -69,7 +101,31 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 @property(nonatomic, strong) NSLayoutConstraint *contentLeadingConstraint;
 @property(nonatomic, strong) NSLayoutConstraint *contentTrailingConstraint;
 @property(nonatomic, strong) NSLayoutConstraint *sidebarWidthConstraint;
+// ★ [TOP-BAR] 顶栏那组约束(侧栏横条:贴顶/高56/右端停在右栏之前)
+@property(nonatomic, strong) NSArray<NSLayoutConstraint *> *ameTopBarConstraints;
+// ★ [ROT-FIX] 顶栏宽度:由我们【显式持有】一条 999 优先级宽度约束(只在【横屏】集里激活)。
+//   旧实现横屏只有 trailing ≤ 上限，宽度靠菜单的 self 指向的 hug + 750 按钮宽去解，
+//   转屏后无人重算 ⇒ 会落到偏小的解而被 masksToBounds 裁掉一截。
+@property(nonatomic, strong) NSLayoutConstraint *ameTopBarWidthConstraint;
 @property(nonatomic, strong) NSLayoutConstraint *rightPanelWidthConstraint;
+// ★ [NORIGHT] 右栏卡片下线:面板容器的"归零"约束(横/竖两套集合同用这几个对象)。
+//   同一个对象被两套集合引用 ⇒ 任一时刻只有一套激活,不会造成"同一属性双钉"。
+@property(nonatomic, strong) NSArray<NSLayoutConstraint *> *norightPanelConstraints;
+
+// ★ [PORTRAIT-FIX] 竖屏/横屏两套约束(互斥激活,与 LauncherCardLayoutViewController 同思路):
+//   横屏 = 原有三栏形态(保持原样,零回归);竖屏 = 顶栏贴安全区 + 内容满宽 + 右栏收成底部卡。
+@property(nonatomic, strong) NSArray<NSLayoutConstraint *> *ameLandscapeConstraints;
+@property(nonatomic, strong) NSArray<NSLayoutConstraint *> *amePortraitConstraints;
+@property(nonatomic, assign) BOOL ameUsingPortraitLayout;   // 当前是否竖屏那套
+@property(nonatomic, assign) BOOL ameLayoutModeApplied;     // 是否已经应用过一次(去重,防约束累积)
+// ★ [PORTRAIT-FIX] 安全区补偿要用的几条约束(常量按 insets 动态改)
+@property(nonatomic, strong) NSLayoutConstraint *amePortraitTopBarTop;
+@property(nonatomic, strong) NSLayoutConstraint *amePortraitTopBarLeading;
+@property(nonatomic, strong) NSLayoutConstraint *amePortraitTopBarTrailing;
+@property(nonatomic, strong) NSLayoutConstraint *amePortraitCardLeading;
+@property(nonatomic, strong) NSLayoutConstraint *amePortraitCardTrailing;
+@property(nonatomic, strong) NSLayoutConstraint *amePortraitCardBottom;
+@property(nonatomic, strong) NSLayoutConstraint *amePortraitCardPinHeight;
 // 关键修复（UI 累积异常）：setContentViewController: 之前每次切换都激活 4 个新约束
 // （leading/trailing/top/bottom 到 contentContainer），但旧 VC 的约束未显式 deactivate。
 // 在 tmpRootVC 保留场景下，缓存复用的子 VC 反复激活约束，layout 解算时 leading/trailing
@@ -79,8 +135,18 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 @property(nonatomic, assign) BOOL isShowingProfileEditor;
 @property(nonatomic, strong) ProfileSettingsViewController *profileEditorVC;
 
-/// Glass 启动动效只播放一次（避免每次切回前台/重新布局都重播）
+// ★ [GLASS] Glass 启动动效只播放一次（避免每次切回前台/重新布局都重播）
 @property(nonatomic, assign) BOOL hasPlayedLaunchAnimation;
+
+// ★ [PORTRAIT-FIX] 竖屏/横屏形态切换与安全区补偿(定义在文件下方,此处前置声明)
+- (BOOL)ameIsPortraitNow;
+- (void)applyRootLayoutForCurrentOrientation;
+- (void)applyRootSafeAreaInsets;
+// ★ [ROT-FIX] 顶栏宽度重算 + 转屏自证
+@property(nonatomic, assign) CGSize ameLastRotLoggedSize;
+- (void)ameRefreshTopBarWidthForSize:(CGSize)size;
+- (CGFloat)ameTopBarContentWidth;
+- (CGFloat)ameClampedTopBarWidthForSize:(CGSize)size;
 
 @end
 
@@ -110,16 +176,7 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
                                              selector:@selector(applyCustomAppearance)
                                                  name:@"LauncherAppearanceChanged"
                                                object:nil];
-
-    // 监听玻璃质感档位变更：用户在设置里调档后立即重绘左右侧栏的玻璃层
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(glassStyleChanged:)
-                                                 name:@"LauncherGlassStyleChanged"
-                                               object:nil];
-
     [self applyCustomAppearance];
-    // 首帧应用一次玻璃档位（此时容器已建好，可安全插入渲染层）
-    [self applyGlassStyleToContainers];
 }
 
 - (BOOL)prefersStatusBarHidden {
@@ -193,21 +250,29 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [[BackgroundManager sharedManager] resumeVideo];
+    // ★ [HOME-TOP] 从子页(联机 Terracotta / ZeroTier)pop 回主页时,把导航栏重新隐藏 —— 见 helper 注释。
+    [self ameHomeTopRestoreRootNavBarChrome];
 }
 
-- (void)viewWillDisappear:(BOOL)animated {
-    [super viewWillDisappear:animated];
-    [[BackgroundManager sharedManager] pauseVideo];
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    // ★ [HOME-TOP] pop 动画收尾时安全区可能才回落 ⇒ 结束时再幂等兜一次,并打一行自证日志。
+    [self ameHomeTopRestoreRootNavBarChrome];
+    NSLog(@"[HOME-TOP][ROOT] appear safe.top=%.0f navBarHidden=%d stack=%lu",
+          self.view.safeAreaInsets.top,
+          self.navigationController.navigationBarHidden ? 1 : 0,
+          (unsigned long)self.navigationController.viewControllers.count);
+
+    // ★ [GLASS] 启动浮入动效：首次显示时三栏错峰从下方浮入。
+    [self glassPlayLaunchAnimationIfNeeded];
 }
 
-#pragma mark - Glass 启动动效
+#pragma mark - ★ [GLASS] 启动浮入动效
 
 /// 首次显示时，三栏容器错峰从下方浮入，形成"拼装"观感。
 /// 只播放一次（hasPlayedLaunchAnimation 守卫）；后续从设置页返回、切前台都不重播，
 /// 避免用户每次切页都被动效打扰。
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-
+- (void)glassPlayLaunchAnimationIfNeeded {
     if (self.hasPlayedLaunchAnimation) return;
     self.hasPlayedLaunchAnimation = YES;
 
@@ -220,10 +285,10 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     // viewDidAppear 时机下 Auto Layout 可能尚未完成本轮布局，此时 bounds 还是 0，
     // 若按 bounds 计算浮入距离会得到 0，表现为"没有动效"。dispatch_async 可确保读到最终 bounds。
     dispatch_async(dispatch_get_main_queue(), ^{
-        CGFloat dist      = [GlassTheme launchSlideDistance];
-        CGFloat stagger   = [GlassTheme launchStaggerDelay];
+        CGFloat dist       = [GlassTheme launchSlideDistance];
+        CGFloat stagger    = [GlassTheme launchStaggerDelay];
         NSTimeInterval dur = [GlassTheme launchDuration];
-        CGFloat damping   = [GlassTheme launchDamping];
+        CGFloat damping    = [GlassTheme launchDamping];
 
         // 初始态：三栏位于下方且透明。中间主内容区位移略大，错峰时层次更明显。
         sidebar.transform = CGAffineTransformMakeTranslation(0, dist);
@@ -252,32 +317,79 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     });
 }
 
+// ★ [HOME-TOP] 「从联机界面退出来后主页的最高点会下移」根因修复。
+//   主页(本类 = 主页标签(index 0)的导航栈根)平时是「自绘顶栏 + 导航栏隐藏」:
+//   主页内容(LauncherNewsViewController 的 headerView,LauncherNewsViewController.m:1518)
+//   以 `view.safeAreaLayoutGuide.topAnchor` 定位。被 push 的联机页为了露出系统返回键会在
+//   viewWillAppear 里把导航栏显示出来(navigationBarHidden=NO),此时本类 view.safeAreaInsets.top
+//   会多出一条导航栏高(≈44pt)。若 pop 回来时不还原 ⇒ 主页自绘顶栏 / 内容整体下移。
+//   push 侧(Terracotta/Multiplayer)在 viewWillDisappear 里尝试还原,但那依赖
+//   `viewControllers.count > 1` 在 pop 时机上的成立,不可靠(易漏)。
+//   ⇒ 由「回到主页」这一侧统一兜底:只要本类重新成为栈顶根且导航栏还开着,就立刻隐藏。
+//   与 VersionManagerViewController.m:1016 / DownloadViewController.m:714 /
+//   LauncherPreferencesViewController 的同名处理口径一致(viewWillAppear re-hide),再补 viewDidAppear。
+- (void)ameHomeTopRestoreRootNavBarChrome {
+    UINavigationController *nav = self.navigationController;
+    if (![nav isKindOfClass:[UINavigationController class]]) return;
+    if (nav.viewControllers.firstObject != self) return;   // 只有本页是标签栈根时才由本页负责导航栏形态
+    if (nav.presentingViewController != nil) return;       // 被 present 的模态根不在此列
+    if (nav.topViewController != self) return;             // 栈顶还有子页 ⇒ 子页自己管导航栏(保留返回键)
+    if (!nav.navigationBarHidden) {
+        nav.navigationBarHidden = YES;                    // 立即还原为「进入子页前」的形态(与主页基线一致)
+        NSLog(@"[HOME-TOP][ROOT] restored navBarHidden=YES (returned from pushed page)");
+    }
+    // 安全区回落会自动触发 viewSafeAreaInsetsDidChange ⇒ 重排;这里再显式要求一次,覆盖时机差。
+    [self.view setNeedsLayout];
+    [self.contentViewController.view setNeedsLayout];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [[BackgroundManager sharedManager] pauseVideo];
+}
+
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
-    // iPhone 与 iPad 切换、或分屏调整大小时，更新侧栏与右侧面板宽度
-    CGFloat sidebarWidth = LauncherRootLayoutSidebarWidth(self.traitCollection);
-    CGFloat rightPanelWidth = LauncherRootLayoutRightPanelWidth(self.traitCollection);
-    if (self.sidebarWidthConstraint.constant != sidebarWidth) {
-        self.sidebarWidthConstraint.constant = sidebarWidth;
+    // ★ [NORIGHT] 右栏已下线:面板宽度恒为 0(该约束已不在任何激活集合里;这里保持常量 0 以免误导)。
+    if (self.rightPanelWidthConstraint.constant != 0.0) {
+        self.rightPanelWidthConstraint.constant = 0.0;
     }
-    if (self.rightPanelWidthConstraint.constant != rightPanelWidth) {
-        self.rightPanelWidthConstraint.constant = rightPanelWidth;
-    }
+    // ★ [ROT-FIX] 旧代码这里写 self.sidebarWidthConstraint.constant —— 但该约束在
+    //   setupContainers 里已被 active=NO(顶栏改用“内容宽”显式约束),写它等于没写
+    //   (“尺寸约束常数未真正重算”)。现改为重算显式顶栏宽度。
+    [self ameRefreshTopBarWidthForSize:self.view.bounds.size];
     // 通知子 VC 重新布局
     for (UIViewController *child in self.childViewControllers) {
         [child.view setNeedsLayout];
     }
+    // ★ [PORTRAIT-FIX] 尺寸类别变化(iPhone/iPad、分屏、转屏)⇒ 重选竖/横形态
+    [self applyRootLayoutForCurrentOrientation];
+}
 
-    // Glass：明暗模式切换时刷新玻璃描边颜色（CGColor 不随动态颜色自动更新）
-    if (@available(iOS 13.0, *)) {
-        if (previousTraitCollection.userInterfaceStyle != self.traitCollection.userInterfaceStyle) {
-            [self refreshGlassEdgeColors];
-        }
-    }
+// ★ [PORTRAIT-FIX] 安全区变化(转屏时灵动岛换边、home indicator 进出)⇒ 重算顶栏/底部卡补偿。
+//   这是唯二可靠的时机:viewDidLayoutSubviews 里 safeAreaInsets 可能还没更新。
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self applyRootLayoutForCurrentOrientation];
+    [self applyRootSafeAreaInsets];
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    // ★ [PORTRAIT-FIX] 首帧/转屏后对齐竖横形态(幂等:内部只在换形态时动约束)
+    [self applyRootLayoutForCurrentOrientation];
+    // ★ [ROT-FIX] 顶栏宽度按当前 bounds 兜底重算(转屏后 bounds 已更新)。
+    //   旧实现从不在这里重算宽度,转屏后容器宽度只能靠 solver 猜 ⇒ “半截”。
+    [self ameRefreshTopBarWidthForSize:self.view.bounds.size];
+    // ★ [ROT-FIX] 布置后自证:尺寸变化(含转屏)才打一行，便于装机核对条宽
+    CGSize ameSize = self.view.bounds.size;
+    if (fabs(ameSize.width - self.ameLastRotLoggedSize.width) > 0.5 ||
+        fabs(ameSize.height - self.ameLastRotLoggedSize.height) > 0.5) {
+        self.ameLastRotLoggedSize = ameSize;
+        NSLog(@"[ROT] %@ size=%.0fx%.0f barW=%.0f",
+              (ameSize.width > ameSize.height) ? @"LANDSCAPE" : @"PORTRAIT",
+              ameSize.width, ameSize.height, self.ameTopBarWidthConstraint.constant);
+    }
     // 修复：移除原先对 nav 栈所有 VC 一刀切注入负 additionalSafeAreaInsets.top 的逻辑。
     // 该负 inset 会导致两个严重问题：
     //   1. 设置页等使用 safeAreaLayoutGuide.topAnchor 布局的 VC，其内容被推到导航栏之上（"飞到顶上"），
@@ -291,11 +403,6 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     // 未覆盖 .left/.right/.bottom 与正值累积。在 tmpRootVC 保留场景下，若其他路径
     // 累加 left/right inset，此方法无法兜底，导致 contentContainer 内容区左右变宽。
     // 现清理所有方向的非零 inset。
-
-    // Glass：侧栏/右面板尺寸变化（旋转、分屏、iPhone/iPad 切换）后重算玻璃描边路径。
-    // 必须放在下方 `if (!contentVC) return;` 之前 —— 否则无内容页时描边不会更新。
-    [self refreshGlassEdgePaths];
-
     UIViewController *contentVC = _contentViewController;
     if (!contentVC) return;
     if ([contentVC isKindOfClass:[UINavigationController class]]) {
@@ -314,22 +421,71 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     }
 }
 
+#pragma mark - ★ [ROT-FIX] 顶栏宽度 + 转屏适配
+
+/// 菜单子 VC 声明的“顶栏内容宽度”(visible 按钮总宽 + 间距); 拿不到则用兜底值。
+- (CGFloat)ameTopBarContentWidth {
+    LauncherMenuViewController *menu = (LauncherMenuViewController *)self.sidebarViewController;
+    if ([menu respondsToSelector:@selector(preferredTopBarWidth)]) {
+        CGFloat w = [menu preferredTopBarWidth];
+        if (w > 1.0) return w;
+    }
+    return kAmeTopBarFallbackWidth;
+}
+
+/// 把内容宽夹到“屏宽 - 右栏宽”，避免顶栏压到右上角头像(对应 required 的 ≤ 上限)。
+- (CGFloat)ameClampedTopBarWidthForSize:(CGSize)size {
+    CGFloat contentW = [self ameTopBarContentWidth];
+    CGFloat rightPanelW = LauncherRootLayoutRightPanelWidth(self.traitCollection);
+    CGFloat available = size.width - rightPanelW;
+    if (available < 1.0) return contentW;
+    return MIN(contentW, available);
+}
+
+/// 按给定尺寸重算顶栏宽度约束常数。仅在值真变时写回 ⇒ 不会在 viewDidLayoutSubviews 里反复触发布局。
+- (void)ameRefreshTopBarWidthForSize:(CGSize)size {
+    if (!self.ameTopBarWidthConstraint) return;
+    CGFloat want = [self ameClampedTopBarWidthForSize:size];
+    if (fabs(self.ameTopBarWidthConstraint.constant - want) < 0.5) return;
+    self.ameTopBarWidthConstraint.constant = want;
+}
+
+/// ★ [ROT-FIX] 转屏入口:按【目标 size】先重算顶栏宽度,再让菜单重放紧凑横排
+/// ⇒ 尺寸常数不停留在转屏前的旧值(修“旋转后只剩半截”)。
+/// 注意:这里【不】主动 activate 某一套约束集 —— 竖/横两套互斥由
+/// applyRootLayoutForCurrentOrientation(见 ★ [PORTRAIT-FIX])统一管理,
+/// 此处再激活一套只会与它打架(两套同时激活会短暂产生 required 冲突)。
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [self ameRefreshTopBarWidthForSize:size];
+    for (UIViewController *child in self.childViewControllers) {
+        if ([child respondsToSelector:@selector(setCompactHorizontalLayout:)]) {
+            [child performSelector:@selector(setCompactHorizontalLayout:) withObject:@(YES)];
+        }
+    }
+    [self.view setNeedsLayout];
+    NSLog(@"[ROT] %@ size=%.0fx%.0f barW=%.0f",
+          (size.width > size.height) ? @"LANDSCAPE" : @"PORTRAIT",
+          size.width, size.height, self.ameTopBarWidthConstraint.constant);
+}
+
 #pragma mark - Setup
 
 - (void)setupContainers {
-    CGFloat corner = [GlassTheme containerCornerRadius];
-
-    // 左侧边栏容器 - 半透明，仅保留外侧（左上/左下）圆角，避免与中间容器相邻处形成凹槽
-    // 注意：masksToBounds 必须保持 YES —— 它负责裁剪毛玻璃层与内容，改为 NO 会导致
-    // 子视图溢出圆角形成直角凸出。玻璃边缘改用独立子层实现（applyGlassEdgeToView:），
-    // 不占用 layer.border（border 会沿 maskedCorners 之外的角也画出来）。
+    // ★ [SYS-TABBAR] 工具条容器 = 一个"透明定位框",玻璃完全交给里面的系统 UITabBar。
+    //   旧实现(用户实测「看不出是玻璃」「圆角不对(有直的地方)」的根因):
+    //     ① [[BackgroundManager sharedManager] applyEffectToView:] 自绘 UIVisualEffectView 模糊;
+    //     ② iOS 26 又叠了一层 UIGlassEffect(还要先把 ①拆掉才看得见);
+    //     ③ 圆角/裁剪(cornerRadius + maskedCorners + masksToBounds)画在【容器】上,
+    //        于是系统标签栏自带的液态玻璃形状被裁成圆角矩形 —— 圆角自然"有直的地方"。
+    //   现在:容器只负责"定位 + 尺寸"(顶栏高 56 / 右端到右栏前),不做任何绘制、不裁剪。
     self.sidebarContainer = [[UIView alloc] init];
     self.sidebarContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    self.sidebarContainer.layer.cornerRadius = corner;
-    self.sidebarContainer.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner;
-    self.sidebarContainer.layer.masksToBounds = YES;
-    [[BackgroundManager sharedManager] applyEffectToView:self.sidebarContainer];
-    [self applyGlassEdgeToView:self.sidebarContainer];
+    self.sidebarContainer.backgroundColor = [UIColor clearColor];
+    self.sidebarContainer.layer.cornerRadius = 0.0;
+    self.sidebarContainer.layer.maskedCorners = 0;          // 不圆任何角
+    self.sidebarContainer.layer.masksToBounds = NO;         // ★ 绝不裁剪:否则切掉 UITabBar 的玻璃/圆角
+    [self.view addSubview:self.sidebarContainer];
 
     // 中间内容容器 - 完全透明，四角直角（内部塞入 nav controller + table view，圆角会裁剪内容且无视觉收益）
     self.contentContainer = [[UIView alloc] init];
@@ -340,36 +496,180 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     // 右侧面板容器 - 半透明，仅保留外侧（右上/右下）圆角
     self.rightPanelContainer = [[UIView alloc] init];
     self.rightPanelContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    self.rightPanelContainer.layer.cornerRadius = corner;
+    self.rightPanelContainer.layer.cornerRadius = 16;
     self.rightPanelContainer.layer.maskedCorners = kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
     self.rightPanelContainer.layer.masksToBounds = YES;
     [[BackgroundManager sharedManager] applyEffectToView:self.rightPanelContainer];
-    [self applyGlassEdgeToView:self.rightPanelContainer];
+    [self.view addSubview:self.rightPanelContainer];
+    // ★ [NORIGHT] 右栏卡整个下线(用户拍板:「这张图片右边那一大块(右栏卡)把它干掉」):
+    //   容器保留在视图树里(面板 VC 才拿得到 window ⇒ 它的通知/present 语义不变),
+    //   但被钉成 0×0 + hidden ⇒ 横竖屏都不占一像素(归零约束见下方 norightPanelConstraints)。
+    self.rightPanelContainer.hidden = YES;
     
     // 设置约束
     // 使用可变宽度约束，便于 traitCollection 变化时更新（iPhone/iPad 适配）
     self.sidebarWidthConstraint = [self.sidebarContainer.widthAnchor constraintEqualToConstant:LauncherRootLayoutSidebarWidth(self.traitCollection)];
     self.rightPanelWidthConstraint = [self.rightPanelContainer.widthAnchor constraintEqualToConstant:LauncherRootLayoutRightPanelWidth(self.traitCollection)];
 
-    [NSLayoutConstraint activateConstraints:@[
-        // 左侧边栏
-        [self.sidebarContainer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.sidebarContainer.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.sidebarContainer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        self.sidebarWidthConstraint,
+    // ★ [TOP-BAR] 侧栏由「左侧竖栏」改为【顶部横条】(用户实测反馈):
+    //   ① 贴顶、高 56;② 右端停在右栏(用户头像)之前 ⇒ 不压头像;
+    //   ③ 内容区 leading 直接贴屏边 ⇒ 占掉原工具栏那条竖带;④ 右栏保持通高、贴右上。
+    self.sidebarWidthConstraint.active = NO;
+    NSLayoutConstraint *ameTopBarLeading = [self.sidebarContainer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor];
+    NSLayoutConstraint *ameTopBarTop     = [self.sidebarContainer.topAnchor constraintEqualToAnchor:self.view.topAnchor];
+    // ★ [TOP-BAR] ≤:工具条贴合自身内容,可早于右栏结束
+    NSLayoutConstraint *ameTopBarTrail   = [self.sidebarContainer.trailingAnchor constraintEqualToAnchor:self.rightPanelContainer.leadingAnchor];
+    NSLayoutConstraint *ameTopBarHeight  = [self.sidebarContainer.heightAnchor constraintEqualToConstant:0.0];   // ★ [LAND-TOP] 横屏顶栏高度归零:用户报"横屏主页还是低" ⇒ 这 40pt 把内容整体压下去了(菜单已移到系统底栏,这里不再需要留条)
+    // ★ [ROT-FIX] 显式顶栏宽度,优先级 999(< trailing ≤ 的 required) ⇒ 极窄屏时让 ≤ 上限赢，
+    //   不会报 "Unable to simultaneously satisfy constraints"。仅加入【横屏】约束集。
+    self.ameTopBarWidthConstraint = [self.sidebarContainer.widthAnchor constraintEqualToConstant:kAmeTopBarFallbackWidth];
+    self.ameTopBarWidthConstraint.priority = UILayoutPriorityRequired - 1;
+    self.ameTopBarConstraints = @[ameTopBarLeading, ameTopBarTop, ameTopBarTrail, ameTopBarHeight];
 
-        // 右侧面板
-        [self.rightPanelContainer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.rightPanelContainer.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.rightPanelContainer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        self.rightPanelWidthConstraint,
+    // ★ [NORIGHT] 面板容器"归零"约束(横/竖两套集合同用这一批对象):
+    //   0×0 + 贴 view 左上角 ⇒ 不占任何可视宽/高;内容区改为直接贴屏边(满宽/满高)。
+    //   (面板 VC 内部那一大组 required 约束会在 setupChildViewControllers 里被整组停用,
+    //    否则 0×0 会与它们冲突并刷 "Unable to simultaneously satisfy constraints"。)
+    NSLayoutConstraint *norightPanelTop   = [self.rightPanelContainer.topAnchor     constraintEqualToAnchor:self.view.topAnchor];
+    NSLayoutConstraint *norightPanelLead  = [self.rightPanelContainer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor];
+    NSLayoutConstraint *norightPanelZeroW = [self.rightPanelContainer.widthAnchor   constraintEqualToConstant:0.0];
+    NSLayoutConstraint *norightPanelZeroH = [self.rightPanelContainer.heightAnchor  constraintEqualToConstant:0.0];
+    self.norightPanelConstraints = @[norightPanelLead, norightPanelTop, norightPanelZeroW, norightPanelZeroH];
 
-        // 中间内容区——填满侧栏与右面板之间的空间
-        [self.contentContainer.leadingAnchor constraintEqualToAnchor:self.sidebarContainer.trailingAnchor],
-        [self.contentContainer.trailingAnchor constraintEqualToAnchor:self.rightPanelContainer.leadingAnchor],
-        [self.contentContainer.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.contentContainer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
-    ]];
+    NSLayoutConstraint *ameLspContentLeading     = [self.contentContainer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor];
+    NSLayoutConstraint *ameLspContentTrailing    = [self.contentContainer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor];   // ★ [NORIGHT] 原 = rightPanelContainer.leading
+    NSLayoutConstraint *ameLspContentTop         = [self.contentContainer.topAnchor constraintEqualToAnchor:self.sidebarContainer.bottomAnchor];
+    NSLayoutConstraint *ameLspContentBottom      = [self.contentContainer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor];
+
+    // ===== 横屏约束集 =====
+    // ★ [NORIGHT] 除"右栏归零"外与改动前逐条一致:顶栏照旧、内容区四边贴屏(不再给右栏留 168pt 竖带)。
+    self.ameLandscapeConstraints = @[
+        ameTopBarLeading, ameTopBarTop, ameTopBarTrail, ameTopBarHeight,
+        ameLspContentLeading, ameLspContentTrailing, ameLspContentTop, ameLspContentBottom,
+        norightPanelLead, norightPanelTop, norightPanelZeroW, norightPanelZeroH
+    ];
+
+    // ===== ★ [PORTRAIT-FIX] 竖屏约束集 =====
+    //   用户原话:「你根本没写竖屏的 ui 啊?」—— 旧代码只有上面那套横屏形态:
+    //     ① 顶栏 top 钉在 view.top ⇒ 竖屏整条被灵动岛/刘海压住;
+    //     ② 右栏(168pt)通高占右侧 ⇒ iPhone 竖屏(≈390pt 宽)内容区只剩 ≈222pt,新闻网格被挤成一条缝;
+    //     ③ 顶部/底部都没吃安全区。
+    //   竖屏形态:顶栏 = 贴安全区顶部的浮动横条(四角圆角);内容 = 吃满其下全部宽度;
+    //             右栏(头像/启动) = 收成底部一张卡,底部避开 home indicator。
+    self.amePortraitTopBarLeading  = [self.sidebarContainer.leadingAnchor  constraintEqualToAnchor:self.view.leadingAnchor  constant:kPortraitOuterMargin];   // ★ [CAPSULE] 参考 LiveContainer:左右留边
+    // ★ [BOTTOM-BAR] 竖屏:标签栏从顶部搬到【屏幕底部】(用户要求,像 LiveContainer 底栏)。
+    self.amePortraitTopBarTop      = [self.sidebarContainer.bottomAnchor   constraintEqualToAnchor:self.view.bottomAnchor   constant:-(kPortraitOuterMargin)];   // ★ [CAPSULE] 底留一条缝(下面安全区再补)
+    self.amePortraitTopBarTrailing = [self.sidebarContainer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-kPortraitOuterMargin];   // ★ [CAPSULE]
+    NSLayoutConstraint *ptTopBarHeight = [self.sidebarContainer.heightAnchor constraintEqualToConstant:0.0];   // ★ [NORIGHT] 原 92.0(自绘底栏占位;底栏已迁到根 UITabBarController ⇒ 这条 92pt 空带不该再占)
+
+    // ★ [NORIGHT] ★★★ 竖屏"底部右栏卡"整块下线(用户:「这张图片的右边那一大块(右栏卡)把它干掉,
+    //   留更多空间给主页,里面的东西搬家」)★★★
+    //   面板原来的定位约束(leading / trailing / bottom / minHeight / pinHeight)【一条都不再创建】
+    //   ⇒ 天然不存在"同一属性被两套钉住";面板改用横屏那批 norightPanelConstraints(0×0 + hidden)。
+    //   (面板里"头像+用户名+版本"搬进主页欢迎卡、"启动游戏"搬成主页底部紧凑胶囊、
+    //    "JIT"搬成主页顶栏 pill、"执行Jar/选择版本"搬到实例页顶部 —— 行为全部转发原方法。)
+
+    NSLayoutConstraint *ptContentLeading  = [self.contentContainer.leadingAnchor  constraintEqualToAnchor:self.view.leadingAnchor];
+    NSLayoutConstraint *ptContentTrailing = [self.contentContainer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor];
+    NSLayoutConstraint *ptContentTop      = [self.contentContainer.topAnchor      constraintEqualToAnchor:self.view.topAnchor constant:0];
+    // ★ [NORIGHT] 原 = rightPanelContainer.top - gap(内容区被那张卡压掉约 300pt);
+    //   现在四边贴屏 = 主页/内容区吃满全部空间,底部标签栏由内容 VC 自己的安全区自动让位。
+    NSLayoutConstraint *ptContentBottom   = [self.contentContainer.bottomAnchor   constraintEqualToAnchor:self.view.bottomAnchor constant:0];
+
+    self.amePortraitConstraints = [@[
+        self.amePortraitTopBarLeading, self.amePortraitTopBarTop, self.amePortraitTopBarTrailing, ptTopBarHeight,
+        ptContentLeading, ptContentTrailing, ptContentTop, ptContentBottom
+    ] arrayByAddingObjectsFromArray:self.norightPanelConstraints];   // ★ [NORIGHT] 面板归零(与横屏同一批对象)
+
+    // ★ [PORTRAIT-FIX] 圆角改用 continuous 曲线(更贴近设计稿;两套形态通用)
+    if (@available(iOS 13.0, *)) {
+        self.sidebarContainer.layer.cornerCurve = kCACornerCurveContinuous;
+        self.rightPanelContainer.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+
+    // ★ [TOP-BAR] 横条形态下菜单要横排(否则竖着一列图标会被 56pt 裁掉)
+    // ★ [PORTRAIT-FIX] 竖屏同样是横排顶栏 ⇒ 两种形态都横排。
+    for (UIViewController *child in self.childViewControllers) {
+        if ([child respondsToSelector:@selector(setCompactHorizontalLayout:)]) {
+            [child performSelector:@selector(setCompactHorizontalLayout:) withObject:@(YES)];
+        }
+    }
+
+    // ★ [PORTRAIT-FIX] 立即按当前方向激活一套(不等 viewDidLayoutSubviews,避免首帧用错形态)
+    [self applyRootLayoutForCurrentOrientation];
+}
+
+#pragma mark - ★ [PORTRAIT-FIX] 竖屏 / 横屏形态切换
+
+/// 当前是否竖屏(以 view 实际尺寸判定,比 traitCollection 更可靠:
+/// 本工程 UIKit+hook 会把 idiom 强制成 Pad,竖直 sizeClass 也不一定准)。
+- (BOOL)ameIsPortraitNow {
+    CGSize s = self.view.bounds.size;
+    return (s.width > 0 && s.height > 0 && s.height > s.width);
+}
+
+/// 竖屏/横屏两套约束互斥激活 + 圆角形态切换。幂等:只在真正换形态时动约束(防约束累积)。
+- (void)applyRootLayoutForCurrentOrientation {
+    CGSize s = self.view.bounds.size;
+    if (s.width <= 0 || s.height <= 0) return;      // 首帧尺寸还没定,等 viewDidLayoutSubviews
+    if (!self.ameLandscapeConstraints || !self.amePortraitConstraints) return;  // setupContainers 还没跑
+    BOOL portrait = [self ameIsPortraitNow];
+    if (self.ameLayoutModeApplied && self.ameUsingPortraitLayout == portrait) return;
+    self.ameUsingPortraitLayout = portrait;
+    self.ameLayoutModeApplied = YES;
+
+    if (portrait) {
+        // ★ [PORTRAIT-FIX] 竖屏:底部卡是"浮动卡片" ⇒ 四角圆角;右栏不再通高。
+        // ★ [SYS-TABBAR] 顶栏容器不再设圆角/裁剪 —— 工具条外观(含圆角)由里面的系统
+        //   UITabBar 自己决定;在容器上画圆角会把系统标签栏的玻璃形状裁坏。
+        self.rightPanelContainer.layer.cornerRadius = kPortraitCardCorner;
+        self.rightPanelContainer.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
+                                                       kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+        [NSLayoutConstraint deactivateConstraints:self.ameLandscapeConstraints];
+        [NSLayoutConstraint activateConstraints:self.amePortraitConstraints];
+    } else {
+        // 横屏:维持原形态(右栏通高,只圆右侧两角)
+        // ★ [SYS-TABBAR] 同上:顶栏容器的圆角/遮罩交给系统 UITabBar。
+        self.rightPanelContainer.layer.cornerRadius = 16.0;
+        self.rightPanelContainer.layer.maskedCorners = kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
+        [NSLayoutConstraint deactivateConstraints:self.amePortraitConstraints];
+        [NSLayoutConstraint activateConstraints:self.ameLandscapeConstraints];
+    }
+
+    // 菜单顶栏两向都横排(横屏也是横条)
+    for (UIViewController *child in self.childViewControllers) {
+        if ([child respondsToSelector:@selector(setCompactHorizontalLayout:)]) {
+            [child performSelector:@selector(setCompactHorizontalLayout:) withObject:@(YES)];
+        }
+    }
+
+    [self applyRootSafeAreaInsets];
+    [self.view setNeedsLayout];
+
+    // ★ [PORTRAIT-FIX] 自证日志(一行):装机后 `log stream --predicate 'eventMessage CONTAINS "[PORTRAIT-FIX]"'` 核对。
+    NSLog(@"[PORTRAIT-FIX][ROOT][NORIGHT] layout=%@ size=%.0fx%.0f safe(top=%.0f bottom=%.0f left=%.0f right=%.0f) topBarH=%.0f rightPanel=%.0fx%.0f",
+          portrait ? @"PORTRAIT" : @"LANDSCAPE",
+          s.width, s.height,
+          self.view.safeAreaInsets.top, self.view.safeAreaInsets.bottom,
+          self.view.safeAreaInsets.left, self.view.safeAreaInsets.right,
+          self.sidebarContainer.bounds.size.height,
+          self.rightPanelContainer.bounds.size.width, self.rightPanelContainer.bounds.size.height);
+}
+
+/// ★ [NORIGHT] 安全区补偿:右栏卡片下线后,竖屏已无卡片需要补偿,顶栏容器也已 0 高。
+///   内容区四边贴屏 ⇒ 底部标签栏 / Home 条由**内容 VC 自己**的安全区(view.safeAreaInsets)让位,
+///   这里只把(已失效的)顶栏容器钉死在 0 处,并打一行自证日志。
+- (void)applyRootSafeAreaInsets {
+    if (!self.amePortraitTopBarTop || !self.amePortraitTopBarLeading || !self.amePortraitTopBarTrailing) return;
+    // ★ [NORIGHT] 面板卡片的定位约束已全部不再创建 ⇒ 原来那几行 constant 写入已删除
+    //   (旧实现按 safe.left/right 把卡片左右往里推 —— 卡片没了,推它没有意义)。
+    self.amePortraitTopBarTop.constant      = 0;   // 贴屏幕最底(容器 0 高 ⇒ 不可见)
+    self.amePortraitTopBarLeading.constant  = 0;
+    self.amePortraitTopBarTrailing.constant = 0;
+    NSLog(@"[NORIGHT][ROOT] safeArea l=%.0f t=%.0f r=%.0f b=%.0f panel=%.0fx%.0f (右栏已下线:0×0+hidden,内容区四边贴屏)",
+          self.view.safeAreaInsets.left, self.view.safeAreaInsets.top,
+          self.view.safeAreaInsets.right, self.view.safeAreaInsets.bottom,
+          self.rightPanelContainer.bounds.size.width, self.rightPanelContainer.bounds.size.height);
 }
 
 - (void)setupChildViewControllers {
@@ -403,6 +703,10 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
         [rightPanelVC.view.bottomAnchor constraintEqualToAnchor:self.rightPanelContainer.bottomAnchor]
     ]];
     [rightPanelVC didMoveToParentViewController:self];
+    // ★ [NORIGHT] 右栏 UI 下线:停用面板内部的整组 required 约束(否则容器 0×0 会与它们冲突,
+    //   控制台会刷 "Unable to simultaneously satisfy constraints")。面板继续作为**不可见控制器**
+    //   存在 —— 通知监听、启动全链路、执行 Jar、版本选择、下载中心弹窗一律照旧。
+    [rightPanelVC norightCollapsePanelLayout:YES];
     _rightPanelViewController = rightPanelVC;
     
     // 注册通知监听
@@ -431,15 +735,15 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
                                              selector:@selector(showAIPage)
                                                  name:@"ShowAIPage"
                                                object:nil];
-    // ZeroTier/Terracotta 联机暂时移除（排查启动崩溃）
-    // [[NSNotificationCenter defaultCenter] addObserver:self
-    //                                          selector:@selector(showMultiplayer)
-    //                                              name:@"ShowMultiplayer"
-    //                                            object:nil];
-    // [[NSNotificationCenter defaultCenter] addObserver:self
-    //                                          selector:@selector(showZeroTier)
-    //                                              name:@"ShowZeroTier"
-    //                                            object:nil];
+    // ★ [MP-RESTORE] 联机恢复：菜单/瓷砖发通知 ⇒ 在中间内容区显示联机页
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(showMultiplayer)
+                                                 name:@"ShowMultiplayer"
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(showZeroTier)
+                                                 name:@"ShowZeroTier"
+                                               object:nil];
     // 首页快捷瓷砖触发：切到对应内容区子页面（不再 FormSheet 弹窗）
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(showModsManager)
@@ -526,12 +830,24 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 }
 
 - (void)showHomePage {
-    LauncherNewsViewController *newsVC = [[LauncherNewsViewController alloc] init];
-    [self setContentViewController:newsVC animated:YES];
+    // ★ [HOST-BUG-B] 主页本就是标签 0 ⇒ 切回标签 0 并回根,不再整体替换主页内容(同类串台)。
+    AmeHomeSwitchToTab(self, 0, YES);
+    // ★ [ACCT-DONE] 但【主页内容区】可能被 setContentViewController: 换成了子页(账户管理,见 showAccountManager):
+    //   那些子页挂在 contentContainer 里、不在标签导航栈里 ⇒ 上面 popToRoot 摘不掉它们。
+    //   原写法 `if (AmeHomeSwitchToTab(self, 0, YES)) return;` 在 iPhone 上恒为 YES
+    //   (AmeRootTabController 把主页也包进了 UINavigationController,见 AmeRootTabController.m:116)
+    //   ⇒ 直接 return ⇒ 内容区永远还原不回主页 ⇒ 账户页「完成」(只发 ShowHomePage)点了没反应(用户实测「点不动」)。
+    //   这里补一步【幂等还原】:内容区不是主页(新闻页)时才重建 —— 已在主页时点标签栏「实例」不会多余刷新。
+    if (![self.contentViewController isKindOfClass:[LauncherNewsViewController class]]) {
+        LauncherNewsViewController *newsVC = [[LauncherNewsViewController alloc] init];
+        [self setContentViewController:newsVC animated:YES];
+    }
 }
 
 - (void)showDownloadPage {
-    // 在中间内容区显示下载页面，包在 NavigationController 中以便子流程（版本选择/安装器）push 显示
+    // ★ [HOST-BUG-B] 下载页本就是标签 1 ⇒ 切标签(不再换主页内容)。
+    if (AmeHomeSwitchToTab(self, 1, YES)) return;
+    // 兜底(老流程):在中间内容区显示下载页面，包在 NavigationController 中以便子流程 push 显示
     DownloadViewController *downloadVC = [[DownloadViewController alloc] init];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:downloadVC];
     nav.navigationBar.prefersLargeTitles = NO;
@@ -539,7 +855,14 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 }
 
 - (void)showVersionManager {
-    // 在中间内容区显示版本管理页面，包在 NavigationController 中以便子流程（模组/光影/游戏目录管理）push
+    // ★ [HOST-BUG-B] 管理版本入口「进入了实例页但底栏没切、返回不了主页」根因:
+    //   本页(主页 tab,index 0)收到 ShowVersionManager 后调 setContentViewController: 把【主页内容区】
+    //   整体换成版本管理页 ⇒ 底栏仍高亮主页、新页又成了另一栈的根,用户返回后主页内容也停在版本管理(串台)。
+    //   改为:切到「实例」标签(index 3 —— 其根页本即 VersionManagerViewController)并 pop 回根页,
+    //   与主页快捷入口 fix2PushTab / e1NewInstanceTapped 同一范式;主页内容区完全不被替换。
+    if (AmeHomeSwitchToTab(self, 3, YES)) return;
+    // 兜底:不在标签栏(老流程)保持原行为 —— 在中间内容区显示版本管理页面，包在 NavigationController
+    // 中以便子流程（模组/光影/游戏目录管理）push
     VersionManagerViewController *vc = [[VersionManagerViewController alloc] init];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.navigationBar.prefersLargeTitles = NO;
@@ -573,7 +896,9 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 }
 
 - (void)showSettings {
-    // 在中间内容区显示设置页面
+    // ★ [HOST-BUG-B] 设置页本就是标签 4 ⇒ 切标签(不再换主页内容)。
+    if (AmeHomeSwitchToTab(self, 4, YES)) return;
+    // 兜底(老流程):在中间内容区显示设置页面
     LauncherPreferencesViewController *vc = [[LauncherPreferencesViewController alloc] init];
     // 包装在导航控制器中，使其子页面能够正常导航
     UINavigationController *navVC = [[UINavigationController alloc] initWithRootViewController:vc];
@@ -590,22 +915,52 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     [self setContentViewController:navVC animated:YES];
 }
 
-// ZeroTier/Terracotta 联机暂时移除（排查启动崩溃）
-// - (void)showMultiplayer { ... TerracottaViewController ... }
-// - (void)showZeroTier { ... MultiplayerViewController ... TerracottaManager ... }
+// ★ [MP-RESTORE] 联机恢复：陶瓦联机 / ZeroTier 两个入口。
+//   ★ [MP-BACK] 改为 push 进【本页所在标签的导航栈】(本页即该标签的根)：系统自带返回键、返回即回主页；
+//   不再用 setContentViewController: 把根内容整体换掉(那会让新页成为全新 nav 的根、presentingViewController==nil，
+//   页面自己隐藏导航栏 ⇒ 用户实测「进得去、没有返回键、出不来」)。与主页磁贴的 fix2PushTab 落点完全一致。
 - (void)showMultiplayer {
-    [self showMultiplayerDisabledAlert];
+    // 陶瓦联机界面（与 HMCL/FCL/ZL2 互通）；libterracotta 未链接时提示
+    if (![TerracottaBridge isAvailable]) {
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:@"联机功能不可用"
+                              message:@"libterracotta 库未链接，请按 README 中「陶瓦联机集成」章节下载 xcframework 后重新构建。"
+                       preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    TerracottaViewController *vc = [[TerracottaViewController alloc] init];
+    [self mpbackPushPageOrFallback:vc];
 }
+
 - (void)showZeroTier {
-    [self showMultiplayerDisabledAlert];
+    // ZeroTier 联机界面（独立入口）；若陶瓦会话进行中，先停以免端口冲突。
+    if ([TerracottaBridge isAvailable] &&
+        [TerracottaManager shared].status != TerracottaStatusDisconnected) {
+        [[TerracottaManager shared] stopSession];
+    }
+    MultiplayerViewController *vc = [[MultiplayerViewController alloc] initWithMode:MultiplayerVCModeLauncher];
+    [self mpbackPushPageOrFallback:vc];
 }
-- (void)showMultiplayerDisabledAlert {
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:localize(@"i18n_str_320", nil)
-                          message:localize(@"i18n_str_321", nil)
-                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_322", nil) style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+
+// ★ [MP-BACK] 联机页统一落地：优先 push 进本页所在标签的导航栈(系统自带返回键)，
+//   栈里已有同类页则 pop 回去(不重复 push)；不在导航栈里(老流程)才退回 setContentViewController。
+- (void)mpbackPushPageOrFallback:(UIViewController *)vc {
+    UINavigationController *hostNav = self.navigationController;
+    if ([hostNav isKindOfClass:[UINavigationController class]]) {
+        for (UIViewController *c in hostNav.viewControllers) {
+            if ([c isKindOfClass:[vc class]]) {
+                [hostNav popToViewController:c animated:YES];
+                return;
+            }
+        }
+        [hostNav pushViewController:vc animated:YES];
+        return;
+    }
+    UINavigationController *navVC = [[UINavigationController alloc] initWithRootViewController:vc];
+    navVC.navigationBar.prefersLargeTitles = NO;
+    [self setContentViewController:navVC animated:YES];
 }
 
 #pragma mark - 首页快捷入口 (替换原 FormSheet 弹窗)
@@ -665,155 +1020,24 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
     };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.navigationBar.prefersLargeTitles = NO;
+    // ★ [ACCOUNTBACK] 账户链路“进得去出不来”修复(本处为根因另一半,详见 AccountListViewController.m 注释):
+    //   本页是**新 nav 的根**,系统不会给返回键 ⇒ 这里显式把导航栏显示出来(它本是唯一出口的载体),
+    //   并把 tintColor 定为语义色。返回键本身由 AccountListViewController 在 viewWillAppear 注入
+    //   (根页才注入;登录页 push 上去后走系统返回键)。只动外观,账户业务一行不改。
+    nav.navigationBarHidden = NO;
+    nav.navigationBar.tintColor = [UIColor labelColor];
     [self setContentViewController:nav animated:YES];
 }
 
 - (void)backgroundChanged {
     // 重新应用背景
     [[BackgroundManager sharedManager] applyBackgroundToView:self.view];
-    // 背景变化可能导致外观（明暗）变化，玻璃描边颜色需同步刷新
-    [self refreshGlassEdgeColors];
-    // 液态玻璃的折射层是采样背景得到的，背景换了必须重采，否则玻璃里还是旧画面
-    [self applyGlassStyleToContainers];
-    if (self.view.window) {
-        [GlassEffectView refreshGlassInViewHierarchy:self.view.window];
-    }
-}
-
-#pragma mark - Glass 玻璃边缘
-
-/// 按当前档位给左右侧栏套上液态玻璃渲染层。
-/// 档位为「关闭」时只清理玻璃层，保留 BackgroundManager 原本的毛玻璃/半透明表现，
-/// 做到"关掉玻璃不等于关掉背景效果"，用户不会觉得设置失灵。
-- (void)applyGlassStyleToContainers {
-    GlassStyle style = [GlassTheme glassStyle];
-    CGFloat radius = [GlassTheme containerCornerRadius];
-
-    for (UIView *container in @[self.sidebarContainer, self.rightPanelContainer]) {
-        if (!container) continue;
-
-        [GlassEffectView removeGlassFromView:container];
-
-        if (style == GlassStyleOff) {
-            // 关闭档：恢复为纯色描边（旧行为），不叠加任何额外图层
-            [self refreshGlassEdgeVisibility:YES inContainer:container];
-            continue;
-        }
-
-        BOOL isSidebar = (container == self.sidebarContainer);
-        UIRectCorner corners = isSidebar
-            ? (UIRectCornerTopLeft | UIRectCornerBottomLeft)
-            : (UIRectCornerTopRight | UIRectCornerBottomRight);
-
-        [GlassEffectView applyGlassToView:container
-                                    style:style
-                             cornerRadius:radius
-                           roundedCorners:corners];
-
-        // GlassEffectView 自带更精细的菲涅尔描边，此时旧的 glassEdge 描边会与之重叠成"双线"，
-        // 因此高档位下隐藏旧描边，避免边缘发毛。
-        [self refreshGlassEdgeVisibility:NO inContainer:container];
-    }
-}
-
-/// 显隐旧版 glassEdge 描边层
-- (void)refreshGlassEdgeVisibility:(BOOL)visible inContainer:(UIView *)container {
-    for (CALayer *sub in container.layer.sublayers) {
-        if ([sub isKindOfClass:[CAShapeLayer class]] && [sub.name isEqualToString:@"glassEdge"]) {
-            sub.hidden = !visible;
-        }
-    }
-}
-
-- (void)glassStyleChanged:(NSNotification *)notification {
-    // 档位存在偏好里，重绘时直接读，无需解析通知的 object
-    [self applyGlassStyleToContainers];
-    // 内容区（导航栏、卡片等）也同步刷新，避免出现"侧栏变了、中间没变"的割裂感
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"LauncherAppearanceApplied" object:nil];
-    if (self.view.window) {
-        [GlassEffectView refreshGlassInViewHierarchy:self.view.window];
-    }
-}
-
-/// 为容器添加"玻璃边缘"描边。
-/// 实现要点：不用 layer.border —— 因为 sidebar/rightPanel 只保留单侧圆角（maskedCorners），
-/// layer.border 会在另外两个直角处也画出实线，视觉上像"缺了圆角的方框"。
-/// 改用 CAShapeLayer + UIBezierPath(roundedRect:byRoundingCorners:)，只画保留圆角的那一侧。
-/// 描边颜色是动态颜色，需在明暗切换时刷新（refreshGlassEdgeColors）。
-- (void)applyGlassEdgeToView:(UIView *)view {
-    if (!view) return;
-
-    CAShapeLayer *edge = [CAShapeLayer layer];
-    edge.name = @"glassEdge";
-    edge.fillColor = [UIColor clearColor].CGColor;
-    edge.strokeColor = [GlassTheme glassBorderColor].CGColor;
-    edge.lineWidth = [GlassTheme borderWidth];
-    edge.contentsScale = UIScreen.mainScreen.scale;
-
-    // 描边要画在容器边界内，否则会被 masksToBounds 裁掉一半
-    edge.frame = view.bounds;
-
-    BOOL isSidebar = (view == self.sidebarContainer);
-    UIRectCorner corners = isSidebar
-        ? (UIRectCornerTopLeft | UIRectCornerBottomLeft)
-        : (UIRectCornerTopRight | UIRectCornerBottomRight);
-    CGFloat radius = [GlassTheme containerCornerRadius];
-
-    edge.path = [UIBezierPath bezierPathWithRoundedRect:view.bounds
-                                      byRoundingCorners:corners
-                                            cornerRadii:CGSizeMake(radius, radius)].CGPath;
-
-    [view.layer addSublayer:edge];
-}
-
-/// 明暗模式变化时刷新玻璃描边颜色（动态颜色 CGColor 不会自动跟随，需手动重取）
-- (void)refreshGlassEdgeColors {
-    CGColorRef color = [GlassTheme glassBorderColor].CGColor;
-    for (UIView *container in @[self.sidebarContainer, self.rightPanelContainer]) {
-        if (!container) continue;
-        for (CALayer *sub in container.layer.sublayers) {
-            if ([sub isKindOfClass:[CAShapeLayer class]] && [sub.name isEqualToString:@"glassEdge"]) {
-                ((CAShapeLayer *)sub).strokeColor = color;
-            }
-        }
-    }
-}
-
-/// 容器尺寸变化后重算玻璃描边路径（旋转 / 分屏 / 设备切换）
-- (void)refreshGlassEdgePaths {
-    for (UIView *container in @[self.sidebarContainer, self.rightPanelContainer]) {
-        if (!container || container.bounds.size.width <= 0 || container.bounds.size.height <= 0) continue;
-
-        BOOL isSidebar = (container == self.sidebarContainer);
-        UIRectCorner corners = isSidebar
-            ? (UIRectCornerTopLeft | UIRectCornerBottomLeft)
-            : (UIRectCornerTopRight | UIRectCornerBottomRight);
-        CGFloat radius = [GlassTheme containerCornerRadius];
-
-        for (CALayer *sub in container.layer.sublayers) {
-            if ([sub isKindOfClass:[CAShapeLayer class]] && [sub.name isEqualToString:@"glassEdge"]) {
-                CAShapeLayer *edge = (CAShapeLayer *)sub;
-                // 关闭隐式动画，避免旋转时描边"追着跑"
-                [CATransaction begin];
-                [CATransaction setDisableActions:YES];
-                edge.frame = container.bounds;
-                edge.path = [UIBezierPath bezierPathWithRoundedRect:container.bounds
-                                                  byRoundingCorners:corners
-                                                        cornerRadii:CGSizeMake(radius, radius)].CGPath;
-                [CATransaction commit];
-            }
-        }
-    }
 }
 
 - (void)uiEffectChanged:(NSNotification *)notification {
     // 重新应用毛玻璃/半透明效果到容器视图
-    [[BackgroundManager sharedManager] applyEffectToView:self.sidebarContainer];
+    // ★ [SYS-TABBAR] 顶栏容器不再自绘效果:玻璃由里面的系统 UITabBar 提供。
     [[BackgroundManager sharedManager] applyEffectToView:self.rightPanelContainer];
-    // 半透明/毛玻璃切换会改变底层画面，液态玻璃的折射层需重新采样
-    if (self.view.window) {
-        [GlassEffectView refreshGlassInViewHierarchy:self.view.window];
-    }
 }
 
 - (void)dealloc {
@@ -835,13 +1059,13 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
             CGFloat r, g, b, a;
             if ([color getRed:&r green:&g blue:&b alpha:&a]) {
                 UIColor *semiColor = [UIColor colorWithRed:r green:g blue:b alpha:MIN(a, 0.85)];
-                [self applySemiTransparentColor:semiColor toContainer:self.sidebarContainer];
+                // ★ [SYS-TABBAR] 只给右栏卡片上色;顶栏容器保持透明(不能盖住系统标签栏玻璃)。
                 [self applySemiTransparentColor:semiColor toContainer:self.rightPanelContainer];
             }
         }
     } else {
         // 未设置自定义颜色时，恢复毛玻璃效果
-        [self restoreEffectToContainer:self.sidebarContainer];
+        // ★ [SYS-TABBAR] 顶栏容器不恢复自绘效果(玻璃由系统 UITabBar 提供)。
         [self restoreEffectToContainer:self.rightPanelContainer];
     }
     // 通知右侧面板、菜单等子 VC 同步刷新外观（text_color / card_color 联动）
@@ -896,9 +1120,20 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 - (void)setContentViewController:(UIViewController *)viewController animated:(BOOL)animated {
     if (!viewController) return;
 
-    // 关键修复（UI 累积异常）：同一实例直接跳过，避免对同一 VC 重复添加约束
-    // 和反复调用 applyEffectToNavigationBar: 导致 hairline UIImageView 累积。
-    if (viewController == _contentViewController) return;
+    // ★ [TAB-OVERLAP] 同一实例直接跳过(避免重复加约束 / hairline 累积)。
+    //   但必须保证它此刻真的挂在容器上并且完全可见 —— 上一次切换的淡入动画可能还没走完
+    //   (alpha < 1),直接 return 会把"半透明 / 没挂上"的状态留在屏幕上。
+    if (viewController == _contentViewController) {
+        if (viewController.view.superview != self.contentContainer) {
+            viewController.view.translatesAutoresizingMaskIntoConstraints = NO;
+            [self.contentContainer addSubview:viewController.view];
+            if (self.currentContentConstraints.count > 0) {
+                [NSLayoutConstraint activateConstraints:self.currentContentConstraints];
+            }
+        }
+        viewController.view.alpha = 1.0;
+        return;
+    }
 
     // 检查是否切换到非编辑器页面
     if (![viewController isKindOfClass:[UINavigationController class]] ||
@@ -907,31 +1142,40 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
         self.profileEditorVC = nil;
     }
 
+    // ★ [TAB-OVERLAP] ① 先把"上一次切换"彻底收尾,再进入本次切换。
+    //   原实现把 removeFromSuperview / removeFromParentViewController 放进 transitionWithView:
+    //   的 completion 里 —— 连点时第二次切换会先于第一次的 completion 执行,
+    //   于是"旧视图还挂在容器里(等 completion 才撤),新视图已经加上" ⇒ 两屏共存 = 画面重叠。
+    //   现在改成【同步】收尾:任何时刻容器里至多一个内容视图。
     UIViewController *oldVC = _contentViewController;
+    if (oldVC) {
+        [oldVC willMoveToParentViewController:nil];
+        [oldVC.view removeFromSuperview];
+        [oldVC removeFromParentViewController];
+    }
 
-    // 移除旧的 + 添加新的
     _contentViewController = viewController;
     [self addChildViewController:viewController];
     viewController.view.translatesAutoresizingMaskIntoConstraints = NO;
 
-    // FCL 风格：对 UINavigationController 应用 nav bar 毛玻璃效果，并对内容 VC 透明化处理，
-    // 避免顶部出现默认白色 nav bar 形成"大白条"，同时与两侧深色毛玻璃面板视觉一致。
+    // FCL 风格:对 UINavigationController 应用 nav bar 毛玻璃效果,并对内容 VC 透明化处理,
+    // 避免顶部出现默认白色 nav bar 形成"大白条",同时与两侧深色毛玻璃面板视觉一致。
     if ([viewController isKindOfClass:[UINavigationController class]]) {
         UINavigationController *nav = (UINavigationController *)viewController;
         nav.delegate = self;
         [[BackgroundManager sharedManager] applyEffectToNavigationBar:nav.navigationBar];
-        // 透明化 topViewController，让背景透出 nav bar 毛玻璃
+        // 透明化 topViewController,让背景透出 nav bar 毛玻璃
         [[BackgroundManager sharedManager] makeViewControllerTransparent:nav.topViewController];
-        // 透明化 nav 栈中所有已存在的 VC（防止前一个页面透出残留）
+        // 透明化 nav 栈中所有已存在的 VC(防止前一个页面透出残留)
         for (UIViewController *stackVC in nav.viewControllers) {
             [[BackgroundManager sharedManager] makeViewControllerTransparent:stackVC];
         }
     } else {
-        // 非导航控制器包装的 VC 也透明化，确保与背景融合
+        // 非导航控制器包装的 VC 也透明化,确保与背景融合
         [[BackgroundManager sharedManager] makeViewControllerTransparent:viewController];
     }
 
-    // 关键修复（UI 累积异常）：deactivate 旧约束，避免在 tmpRootVC 保留场景下
+    // 关键修复(UI 累积异常):deactivate 旧约束,避免在 tmpRootVC 保留场景下
     // 缓存复用的子 VC 反复激活约束导致 contentContainer 内容区左右变宽。
     if (self.currentContentConstraints.count > 0) {
         [NSLayoutConstraint deactivateConstraints:self.currentContentConstraints];
@@ -945,92 +1189,61 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
         [viewController.view.bottomAnchor constraintEqualToAnchor:self.contentContainer.bottomAnchor]
     ];
 
+    // ★ [TAB-OVERLAP] ② 结构切换【同步】完成:上面的旧视图移除 + 这里的挂载/约束/布局一次做完。
+    //   刻意不再用 [UIView transitionWithView:]:它会对整个容器抓快照,连点时上一张快照还留在
+    //   容器里(要等 0.3s 动画结束才被撤),和这一次叠在一起就是用户看到的"画面重叠 / 残影"。
+    //   改成只对【新视图自身】做动效 ⇒ 结构上永远只有一个内容视图,快照无处可叠。
+    viewController.view.alpha = (animated && oldVC) ? 0.0 : 1.0;
+    [self.contentContainer addSubview:viewController.view];
+    [NSLayoutConstraint activateConstraints:newConstraints];
+    [self.contentContainer layoutIfNeeded];   // 先布局到位再动效(否则会从左上角 0x0 小点扩展出来)
+    [viewController didMoveToParentViewController:self];
+    self.currentContentConstraints = newConstraints;
+
+    // ★ [GLASS] 页面切换动效:样式由 GlassTheme 依偏好 general.transition_style 决定,
+    //   默认 slide-up(从下方浮入)。保留上游的"同步结构切换防重叠"改进,只把淡入换成 Glass 动效。
     if (animated && oldVC) {
-        // ===== Glass 页面切换动效 =====
-        // 样式由 GlassTheme 依偏好 general.transition_style 决定，默认 slide-up（从下方浮入）。
-        // 无论哪种样式，都遵守同一套父子 VC 生命周期纪律：
-        //   1) 先把新 VC 的视图挂上并激活约束（否则 bounds 为 0，浮入距离/缩放基准都算错）
-        //   2) 在动画 block 内 layoutIfNeeded 强制布局，避免 UIKit snapshot 时 frame 还是 (0,0,0,0)
-        //   3) completion 中收尾旧 VC 并复位其 transform/alpha，防止复用残留
-        [self.contentContainer addSubview:viewController.view];
-        [NSLayoutConstraint activateConstraints:newConstraints];
-        [self.contentContainer layoutIfNeeded];
-
-        [oldVC willMoveToParentViewController:nil];
-        [viewController didMoveToParentViewController:self];
-
         GlassTransitionStyle style = [GlassTheme currentTransitionStyle];
         NSTimeInterval duration = [GlassTheme transitionDuration];
         CGFloat damping = [GlassTheme transitionDamping];
         CGFloat velocity = [GlassTheme transitionVelocity];
 
-        // 退场页复位，保证初始状态干净（可能被上一次动效或复用残留影响）
+        if (style == GlassTransitionStyleScaleFade) {
+            viewController.view.transform = CGAffineTransformMakeScale(0.92, 0.92);
+        } else if (style == GlassTransitionStyleSlideUp) {
+            // 浮入基准:整屏高度之下,配合弹簧阻尼产生"浮上来"的观感
+            CGFloat h = self.contentContainer.bounds.size.height;
+            viewController.view.transform = CGAffineTransformMakeTranslation(0, MAX(h, 120.0));
+        }
+        viewController.view.alpha = 0.0;
+
+        // 旧页复位,保证初始状态干净
         oldVC.view.transform = CGAffineTransformIdentity;
         oldVC.view.alpha = 1.0;
 
-        void (^cleanup)(BOOL) = ^(BOOL finished) {
-            [oldVC.view removeFromSuperview];
-            [oldVC removeFromParentViewController];
-            // 关键：退场页在动画中被改过 transform/alpha，必须复位，否则该 VC 复用时会带残留
-            oldVC.view.transform = CGAffineTransformIdentity;
-            oldVC.view.alpha = 1.0;
-            // 新页面同样复位，确保后续布局不受残留 transform 影响
+        CGFloat oldOffsetY = [GlassTheme transitionOldPageOffsetY];
+        [UIView animateWithDuration:duration
+                              delay:0
+             usingSpringWithDamping:damping
+              initialSpringVelocity:velocity
+                            options:(UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState)
+                         animations:^{
             viewController.view.transform = CGAffineTransformIdentity;
             viewController.view.alpha = 1.0;
-        };
-
-        if (style == GlassTransitionStyleCrossDissolve) {
-            // 原版交叉淡化：仅在容器上做 transition，保证无残影
-            [UIView transitionWithView:self.contentContainer
-                              duration:0.3
-                               options:UIViewAnimationOptionTransitionCrossDissolve
-                            animations:^{
-                                [oldVC.view removeFromSuperview];
-                                [self.contentContainer addSubview:viewController.view];
-                                [self.contentContainer layoutIfNeeded];
-                            } completion:^(BOOL finished) {
-                                cleanup(finished);
-                            }];
-        } else {
-            // slide-up / scale-fade：位移或缩放淡入，旧页反向让位形成视差
-            CGFloat h = self.contentContainer.bounds.size.height;
-            CGFloat oldOffsetY = [GlassTheme transitionOldPageOffsetY];
-
-            if (style == GlassTransitionStyleScaleFade) {
-                viewController.view.transform = CGAffineTransformMakeScale(0.92, 0.92);
-            } else {
-                // 浮入基准：整屏高度之下，配合弹簧阻尼产生"浮上来"的观感
-                viewController.view.transform = CGAffineTransformMakeTranslation(0, MAX(h, 120.0));
-            }
-            viewController.view.alpha = 0.0;
-
-            [UIView animateWithDuration:duration
-                                  delay:0
-                 usingSpringWithDamping:damping
-                  initialSpringVelocity:velocity
-                                options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction
-                             animations:^{
-                viewController.view.transform = CGAffineTransformIdentity;
-                viewController.view.alpha = 1.0;
-                // 旧页上移并淡出，形成"被顶上去"的层次感
-                oldVC.view.transform = CGAffineTransformMakeTranslation(0, -oldOffsetY);
-                oldVC.view.alpha = 0.0;
-            } completion:^(BOOL finished) {
-                cleanup(finished);
-            }];
-        }
+            // 旧页上移并淡出,形成"被顶上去"的层次感
+            oldVC.view.transform = CGAffineTransformMakeTranslation(0, -oldOffsetY);
+            oldVC.view.alpha = 0.0;
+        } completion:^(BOOL finished) {
+            // 旧页在动画中被改过 transform/alpha,必须复位,否则该 VC 复用时会带残留
+            oldVC.view.transform = CGAffineTransformIdentity;
+            oldVC.view.alpha = 1.0;
+            viewController.view.transform = CGAffineTransformIdentity;
+            viewController.view.alpha = 1.0;
+        }];
     } else {
-        if (oldVC) {
-            [oldVC willMoveToParentViewController:nil];
-            [oldVC.view removeFromSuperview];
-            [oldVC removeFromParentViewController];
-        }
-        [self.contentContainer addSubview:viewController.view];
-        [NSLayoutConstraint activateConstraints:newConstraints];
-        [viewController didMoveToParentViewController:self];
+        viewController.view.transform = CGAffineTransformIdentity;
+        viewController.view.alpha = 1.0;
     }
-
-    self.currentContentConstraints = newConstraints;
 }
 
 #pragma mark - Orientation
@@ -1040,7 +1253,25 @@ static CGFloat LauncherRootLayoutRightPanelWidth(UITraitCollection *trait) {
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskLandscape;
+    // ★ [PORTRAIT] 放开竖屏:原来是写死 Landscape ⇒ 竖屏进不去。
+    // 竖屏排布由 LauncherCardLayoutViewController 切换(三卡竖摞 + 菜单横排);
+    // 游戏(SurfaceViewController)单独锁横屏,保证游戏内不会竖过来。
+    // ★ [PORTRAIT] 游戏页锁横屏:窗口层已放开竖屏(SceneDelegate/AppDelegate),
+    //   若当前内容是游戏(SurfaceViewController,可能在导航栈里),这里必须把它锁回横屏,
+    //   否则游戏内会跟着竖过来。启动器各页则允许竖屏。
+    UIViewController *content = _contentViewController;
+    if ([content isKindOfClass:[UINavigationController class]]) {
+        content = ((UINavigationController *)content).topViewController;
+    }
+    Class gameCls = NSClassFromString(@"SurfaceViewController");
+    if (gameCls != Nil && [content isKindOfClass:gameCls]) {
+        return UIInterfaceOrientationMaskLandscape;
+    }
+
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    return UIInterfaceOrientationMaskAllButUpsideDown;
 }
 
 #pragma mark - UINavigationControllerDelegate

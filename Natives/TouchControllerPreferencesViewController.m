@@ -170,12 +170,8 @@ typedef NS_ENUM(NSInteger, TouchControllerCommMode) {
               @"step": @1,
               @"title": localize(@"preference.touchcontroller.vibrate.intensity", nil) ?: @"Vibration Intensity"
             },
-            @{@"key": @"mod_touch_moveview_enable",
-              @"icon": @"arrow.triangle.2.circlepath",
-              @"type": self.typeSwitch,
-              @"canDismissWithSwipe": @NO,
-              @"title": localize(@"preference.touchcontroller.moveview.enable", nil) ?: @"Enable Move View"
-            },
+            // ★ [HOST-BUG-B] 已按群主要求移除「视角摇晃」相关选项(mod_touch_moveview_enable
+            //   「启用移动视角」)并强制关闭 —— 见 PLPreferences 默认值/迁移 与 SurfaceViewController 门禁。
             @{@"key": @"mod_touch_about",
               @"icon": @"info.circle",
               @"type": self.typeButton,

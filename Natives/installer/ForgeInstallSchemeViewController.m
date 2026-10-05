@@ -102,6 +102,7 @@
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
     card.layer.cornerRadius = 16;
+    card.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     card.layer.masksToBounds = YES;
     card.translatesAutoresizingMaskIntoConstraints = NO;
 

@@ -1,4 +1,6 @@
 #import "PLCrashView.h"
+// ★ [GLASS-LIQUID] 材质统一走风格层(AmeGlassEffect):iOS≥26 ⇒ 系统 UIGlassEffect
+#import "UIKit+GlassSurface.h"
 #import "PLLogOutputView.h"
 #import "SurfaceViewController.h"
 #import "ios_uikit_bridge.h"
@@ -165,9 +167,10 @@ static NSString *const kGitHubIssuesURL = @"https://github.com/herbrine8403/Amet
     if (![[BackgroundManager sharedManager] hasBackground]) {
         UIBlurEffect *blurEffect;
         if (@available(iOS 13.0, *)) {
-            blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+            // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect
+            blurEffect = (UIBlurEffect *)AmeGlassEffect(UIBlurEffectStyleSystemMaterial);
         } else {
-            blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+            blurEffect = (UIBlurEffect *)AmeGlassEffect(UIBlurEffectStyleLight);
         }
         UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
         blurView.translatesAutoresizingMaskIntoConstraints = NO;

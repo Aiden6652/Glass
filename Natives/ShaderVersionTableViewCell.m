@@ -233,6 +233,7 @@
         moreBadge.textAlignment = NSTextAlignmentCenter;
         moreBadge.backgroundColor = [UIColor tertiaryLabelColor];
         moreBadge.layer.cornerRadius = 7;
+        moreBadge.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
         moreBadge.layer.masksToBounds = YES;
         moreBadge.translatesAutoresizingMaskIntoConstraints = NO;
         [moreBadge setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];

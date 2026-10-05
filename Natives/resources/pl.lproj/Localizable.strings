@@ -177,13 +177,3 @@
 "preference.title.debug_show_layout_overlap" = "Pokaż nakładające się układy";
 "preference.detail.debug_show_layout_overlap" = "Nakładaj każdy widok przezroczystym kolorem, aby odsłonić nakładające się widoki.";
 "controller_configurator.playstation.title.named_back" = "Wybierz";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Nie udało się zainstalować wersji vanilla %@.\n\n%@ nie został zainstalowany. Sprawdź połączenie sieciowe i spróbuj ponownie.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Styl szkła";
-"i18n_str_2069" = "Wył.";
-"i18n_str_2070" = "Standardowy";
-"i18n_str_2071" = "Mocny";
-"i18n_str_2072" = "Płynne szkło";

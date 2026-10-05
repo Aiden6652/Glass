@@ -1,4 +1,5 @@
 //
+#import "utils.h"   // ★ [I18N-ORDER] localize()
 //  MinecraftNewsViewController.m
 //  Amethyst
 //
@@ -108,7 +109,8 @@ static const NSInteger kNewsPageSize = 24;
         _readMoreLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _readMoreLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
         _readMoreLabel.textColor = [UIColor systemBlueColor];
-        _readMoreLabel.text = NSLocalizedString(@"mc_news.read_more", @"查看详情");
+        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+        _readMoreLabel.text = localize(@"mc_news.read_more", @"查看详情");
         _readMoreLabel.textAlignment = NSTextAlignmentRight;
         [self.contentView addSubview:_readMoreLabel];
 
@@ -196,8 +198,19 @@ static const NSInteger kNewsPageSize = 24;
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = NSLocalizedString(@"mc_news.title", @"Minecraft 新闻");
+    // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+    self.title = localize(@"mc_news.title", @"Minecraft 新闻");
     self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    // ★ [LAND-BUG] 本页只由首页(MinecraftNews tile)以 UIModalPresentationPageSheet 整页弹出，
+    //   且原先没有设置任何 navigationItem（无关闭/返回）⇒ iPhone 上 PageSheet 铺满全屏时
+    //   只剩「下滑手势」这一条退出路径，横屏/无明显抓手时用户会认为「退不出去」。
+    //   在此补一个标准「关闭」按钮（与 AnnouncementListViewController 一致）。
+    UIBarButtonItem *landBugCloseItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                                                                      target:self
+                                                                                      action:@selector(landBugCloseTapped)];
+    landBugCloseItem.accessibilityLabel = @"关闭";
+    self.navigationItem.leftBarButtonItem = landBugCloseItem;
 
     // 适配自定义启动器背景
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
@@ -262,7 +275,8 @@ static const NSInteger kNewsPageSize = 24;
 
     self.retryButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.retryButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.retryButton setTitle:NSLocalizedString(@"mc_news.retry", @"重试") forState:UIControlStateNormal];
+    // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+    [self.retryButton setTitle:localize(@"mc_news.retry", @"重试") forState:UIControlStateNormal];
     self.retryButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
     [self.retryButton addTarget:self action:@selector(loadFirstPage) forControlEvents:UIControlEventTouchUpInside];
     self.retryButton.hidden = YES;
@@ -351,7 +365,8 @@ static const NSInteger kNewsPageSize = 24;
 
         if (error) {
             if (strongSelf.items.count == 0) {
-                strongSelf.errorLabel.text = [NSString stringWithFormat:@"%@\n%@", NSLocalizedString(@"mc_news.load_failed", @"加载失败"), error.localizedDescription ?: @""];
+                // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+                strongSelf.errorLabel.text = [NSString stringWithFormat:@"%@\n%@", localize(@"mc_news.load_failed", @"加载失败"), error.localizedDescription ?: @""];
                 strongSelf.errorLabel.hidden = NO;
                 strongSelf.retryButton.hidden = NO;
             }
@@ -456,6 +471,17 @@ static const NSInteger kNewsPageSize = 24;
 
 - (void)safariViewControllerDidFinish:(SFSafariViewController *)controller {
     [controller dismissViewControllerAnimated:YES completion:nil];
+}
+
+#pragma mark - ★ [LAND-BUG] 关闭
+
+- (void)landBugCloseTapped {
+    UINavigationController *nav = self.navigationController;
+    if (nav.presentingViewController) {
+        [nav dismissViewControllerAnimated:YES completion:nil];
+    } else {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 @end

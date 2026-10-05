@@ -95,6 +95,7 @@
     self.iconView = [[UIImageView alloc] init];
     self.iconView.translatesAutoresizingMaskIntoConstraints = NO;
     self.iconView.layer.cornerRadius = 16;
+    self.iconView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.iconView.clipsToBounds = YES;
     self.iconView.contentMode = UIViewContentModeScaleAspectFill;
     self.iconView.backgroundColor = [UIColor secondarySystemBackgroundColor];
@@ -150,6 +151,7 @@
     [self.joinButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.joinButton.backgroundColor = [UIColor systemBlueColor];
     self.joinButton.layer.cornerRadius = 10;
+    self.joinButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.joinButton.titleLabel.font = [UIFont boldSystemFontOfSize:16];
     [self.joinButton addTarget:self action:@selector(joinServer) forControlEvents:UIControlEventTouchUpInside];
     [content addSubview:self.joinButton];
@@ -161,6 +163,7 @@
     [self.downloadPackButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.downloadPackButton.backgroundColor = [UIColor systemPurpleColor];
     self.downloadPackButton.layer.cornerRadius = 10;
+    self.downloadPackButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.downloadPackButton.titleLabel.font = [UIFont boldSystemFontOfSize:16];
     [self.downloadPackButton addTarget:self action:@selector(downloadServerPack) forControlEvents:UIControlEventTouchUpInside];
     [content addSubview:self.downloadPackButton];

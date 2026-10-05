@@ -23,6 +23,57 @@ endif()
 
 #set(CMAKE_BUILD_TYPE Release)
 
+# ---------------------------------------------------------------------------
+# glslang 从源码构建（对齐 Air Task 45/46）
+#
+# iOS 分支此前链接 libraries/ios/ 下的预编译 .a，二进制里固化的是未打补丁的
+# glslang。MC 26.3 的 position_color 顶点着色器会走到
+# TParseContext::lValueErrorCheck 的 swizzle 选择器解引用链
+# (getAsAggregate() -> getSequence() -> getConstArray()[0])，读到被堆回收字节
+# 污染的 constArray 指针（+0xd8）即 SIGSEGV，拖垮整个进程。
+#
+# 从源码构建后，3rdparty/glslang 上已应用两个防护补丁：
+#   * glslang-lvalue-nullguard.patch          —— 解引用前空判 + 越界判
+#   * glslang-pool-zero-and-size-guards.patch —— 池块零填充 + constArray 尺寸判
+# 解析失败降级为“单个 shader 的 GLSL 错误”，而不是进程死亡。
+#
+# 仅 iOS：Android 分支继续用 libraries/${ANDROID_ABI}/ 下的预编译 .a，行为不变。
+# ---------------------------------------------------------------------------
+if(MACOS)
+        set(ENABLE_RTTI             ON  CACHE BOOL "Enables RTTI (will be took by glslang)" FORCE)
+        set(ENABLE_HLSL             OFF CACHE BOOL "Disable HLSL input for glslang" FORCE)
+        set(BUILD_EXTERNAL          OFF CACHE BOOL "Disable build external dependencies for glslang" FORCE)
+        set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "Disable glslangValidator/spirv-remap" FORCE)
+        set(ENABLE_OPT              OFF CACHE BOOL "Disable SPIRV-Tools opt usage in glslang" FORCE)
+        set(GLSLANG_TESTS           OFF CACHE BOOL "Disable glslang tests (needs googletest)" FORCE)
+        set(GLSLANG_ENABLE_INSTALL  OFF CACHE BOOL "Disable glslang install rules" FORCE)
+        add_subdirectory(3rdparty/glslang)
+        # -------------------------------------------------------------------
+        # SPIRV-Cross 从源码构建 + 静态链接（对齐参考仓库）
+        #
+        # iOS 分支此前链接 libraries/ios/ 下预编译的 libspirv-cross-c-shared.dylib：
+        # 那份二进制与从源码构建的 glslang 不同源（glslang 已按本仓库 vendored 版本
+        # 重建并打上 nullguard / pool-zero 补丁，SPIRV-Cross 却是另一份来历的预编译
+        # 产物）。MC 26.3 走 SPIR-V 管线后，MG 内部链路是
+        #   glslang 解析 GLSL330 -> SPIR-V -> SPIRV-Cross 生成 ESSL300
+        # 两端版本/ABI 不一致会在资源重载阶段把进程拖死：无 .ips、无 hs_err，表现为
+        # 静默闪退。参考仓库对该目录 add_subdirectory 并链接静态目标 spirv-cross-c，
+        # 两端同源同版本，且不产出共享库（也就不会与 spvc 垫片同名）。
+        #
+        # 仅 iOS：Android 分支继续用 libraries/${ANDROID_ABI}/ 下的预编译 .so。
+        # -------------------------------------------------------------------
+        set(SPIRV_CROSS_ENABLE_C_API   ON  CACHE BOOL "Enable C API" FORCE)
+        set(SPIRV_CROSS_ENABLE_GLSL    ON  CACHE BOOL "Enable GLSL backend" FORCE)
+        set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "Disable reflect" FORCE)
+        set(SPIRV_CROSS_ENABLE_HLSL    OFF CACHE BOOL "Disable HLSL backend" FORCE)
+        set(SPIRV_CROSS_ENABLE_MSL     OFF CACHE BOOL "Disable MSL backend" FORCE)
+        set(SPIRV_CROSS_ENABLE_CPP     OFF CACHE BOOL "Disable C++ API target" FORCE)
+        set(SPIRV_CROSS_CLI            OFF CACHE BOOL "Disable CLI binary" FORCE)
+        set(SPIRV_CROSS_STATIC         ON  CACHE BOOL "Prefer static libs" FORCE)
+        set(SPIRV_CROSS_ENABLE_UTIL    OFF CACHE BOOL "Disable util" FORCE)
+        add_subdirectory(3rdparty/SPIRV-Cross)
+endif()
+
 set(PROFILING OFF)
 
 find_library(GLSLANG_LIB glslang PATHS ${CMAKE_SOURCE_DIR}/libraries/${ANDROID_ABI}/)
@@ -60,6 +111,12 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         config/config.cpp
         config/gpu_utils.cpp
         config/settings.cpp
+        gl/enable.cpp
+        gl/restart.cpp
+        gl/transfer.cpp
+        gl/random_string_gen.cpp
+        egl/context.cpp
+        config/stats.cpp
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
@@ -72,20 +129,8 @@ if(MACOS)
         # iOS
         set(iOS_LIB_DIR ${CMAKE_SOURCE_DIR}/libraries/ios)
         target_link_libraries(${CMAKE_PROJECT_NAME}
-                ${iOS_LIB_DIR}/libglslang.a
-                ${iOS_LIB_DIR}/libspirv-cross-c-shared.dylib
-                ${iOS_LIB_DIR}/libGenericCodeGen.a
-                ${iOS_LIB_DIR}/libglslang-default-resource-limits.a
-                ${iOS_LIB_DIR}/libMachineIndependent.a
-                ${iOS_LIB_DIR}/libOSDependent.a
-                ${iOS_LIB_DIR}/libSPIRV-Tools-diff.a
-                ${iOS_LIB_DIR}/libSPIRV-Tools-link.a
-                ${iOS_LIB_DIR}/libSPIRV-Tools-lint.a
-                ${iOS_LIB_DIR}/libSPIRV-Tools-opt.a
-                ${iOS_LIB_DIR}/libSPIRV-Tools-reduce.a
-                ${iOS_LIB_DIR}/libSPIRV-Tools.a
-                ${iOS_LIB_DIR}/libSPIRV.a
-                ${iOS_LIB_DIR}/libSPVRemapper.a
+                glslang::glslang
+                spirv-cross-c
                 "-F${CMAKE_SOURCE_DIR}/external"
                 "-framework libEGL"
                 "-framework libGLESv2"

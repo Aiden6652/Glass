@@ -1,14 +1,24 @@
-# macOS
+/packages
+/artifacts
+/JavaApp/.gradle
+/JavaApp/build
+/JavaApp/local_out
+/Natives/Glass
+/Natives/build
 .DS_Store
-# Xcode
-build/
-DerivedData/
-*.xcuserstate
+xcshareddata/
 xcuserdata/
-# 构建产物
-artifacts/
-*.ipa
-*.tipa
-*.dSYM/
-# Java 编译产物
-*.class
+project.xcworkspace/
+/depends
+/Natives/config.h
+# ★ [GLASS] entitlements.codesign.xml 不忽略：
+#   上游 .gitignore 曾排除它(Makefile 会在缺失时用 $(TEAMID) 动态生成)。
+#   但 CI 里 TEAMID 为空 ⇒ 生成的 application-identifier 变成 ".com.glass.launcher"，
+#   ldid 签名后 app 无法正常安装/启动。本仓改为把三份 entitlements 提交入库
+#   (trollstore / sideload / codesign)，保证 CI 产出可直接用的 ipa。
+# entitlements.codesign.xml
+$null
+/temp
+/docs
+.trae-html-share-packages/
+.trae/specs/

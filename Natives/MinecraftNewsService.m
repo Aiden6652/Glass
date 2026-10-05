@@ -31,7 +31,9 @@ static NSString * const MCNewsBaseAPIURL = @"https://net-secondary.web.minecraft
     self = [super init];
     if (self) {
         // 默认跟随系统语言：zh-Hans/zh-Hant -> zh-cn，其他默认 en-us
-        NSString *preferredLang = [[NSBundle mainBundle] preferredLocalizations].firstObject ?: @"en";
+        // ★ [I18N-ORDER] 走统一入口:"生效语言"(用户选择→系统匹配→en),不再读 Bundle 系统首选,
+        //   否则手动切语言后这里仍用系统语言 ⇒ 新闻语言与界面不一致。
+        NSString *preferredLang = AmeLauncherEffectiveLanguageCode();
         if ([preferredLang hasPrefix:@"zh-Hans"] || [preferredLang hasPrefix:@"zh-CN"]) {
             _locale = @"zh-cn";
         } else if ([preferredLang hasPrefix:@"zh-Hant"] || [preferredLang hasPrefix:@"zh-TW"]) {

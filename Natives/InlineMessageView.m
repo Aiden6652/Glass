@@ -7,6 +7,8 @@
 
 #import "InlineMessageView.h"
 #import "utils.h"
+// ★ [GLASS-LIQUID] 材质统一走风格层(AmeGlassEffect):iOS≥26 ⇒ 系统 UIGlassEffect
+#import "UIKit+GlassSurface.h"
 
 @interface InlineMessageView ()
 
@@ -76,12 +78,15 @@
     self.containerView = [[UIView alloc] init];
     self.containerView.translatesAutoresizingMaskIntoConstraints = NO;
     self.containerView.layer.cornerRadius = 16;
+    self.containerView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.containerView.layer.masksToBounds = YES;
     self.containerView.layer.borderWidth = 1;
     self.containerView.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.1].CGColor;
 
     // 根据类型设置背景色
-    UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+    UIBlurEffect *blur = nil;
+    // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect(不再直接 UIBlurEffect)
+    blur = (UIBlurEffect *)AmeGlassEffect(UIBlurEffectStyleSystemThinMaterial);
     UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
     blurView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.containerView addSubview:blurView];

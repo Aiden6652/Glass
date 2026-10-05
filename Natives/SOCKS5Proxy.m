@@ -1343,7 +1343,7 @@ static ssize_t writeAll(int fd, const void *buf, size_t len) {
     __block atomic_bool remoteClosed = ATOMIC_VAR_INIT(false);
 
     // 创建并发队列用于双向转发
-    dispatch_queue_t forwardQueue = dispatch_queue_create("com.angelaura.socks5.forward", DISPATCH_QUEUE_CONCURRENT);
+    dispatch_queue_t forwardQueue = dispatch_queue_create("com.glass.socks5.forward", DISPATCH_QUEUE_CONCURRENT);
     dispatch_group_t group = dispatch_group_create();
 
     // ============================================================

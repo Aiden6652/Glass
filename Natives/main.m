@@ -22,6 +22,7 @@
 #include <dirent.h>
 #include "utils.h"
 #include "codesign.h"
+#include <dlfcn.h>
 
 #define CS_PLATFORM_BINARY 0x4000000
 #define PT_TRACE_ME 0
@@ -150,7 +151,11 @@ void init_redirectStdio() {
 
     if (!file) {
         NSLog(@"[Pre-init] Error: failed to open %@", currName);
-        assert(0 && "Failed to open latestlog.txt. Check oslog for more details.");
+        // ★ [DEMINE] 原为 assert(0,...)：Release 下 C assert 被 -DNDEBUG 编译掉(无效)，
+        //   但 Debug 构建会在此直接 abort 整个启动；且一旦走到这里，原代码仍会把
+        //   stdout/stderr 重定向进管道、由 nil 的 file 静默吞掉全部输出 —— 用户什么都
+        //   看不到。这里降级为记日志并直接返回(保持 oslog 输出)，App 继续启动。
+        return;
     }
 
     setvbuf(stdout, 0, _IOLBF, 0); // make stdout line-buffered
@@ -296,6 +301,28 @@ void init_setupHomeDirectory() {
 }
 
 int main(int argc, char *argv[]) {
+    // Air Task 42：shaderc 编译沙箱 helper 子进程分支。必须在【一切】
+    // launcher/JVM/hook 初始化之前分支。父进程的 shaderc shim 通过
+    // posix_spawn 以 AME_SHADERC_SANDBOX=1 + AME_SB_FD=3 拉起本进程。
+    // 缺此分支时，被拉起的子进程会跑完整 launcher 启动流程（建目录、
+    // 起悬浮球、永不发 ready 握手）→ 父进程死等 → 启动卡死。
+    // 符号在 libshaderc.dylib 垫片里（Makefile 编入 shaderc_sandbox.m），
+    // 故用 dlsym 解析，避免主可执行文件链接期依赖。
+    if (getenv("AME_SHADERC_SANDBOX") != NULL) {
+        void *sbh = dlopen("@rpath/libshaderc.dylib", RTLD_NOW);
+        if (!sbh) {
+            sbh = dlopen("libshaderc.dylib", RTLD_NOW);
+        }
+        if (sbh) {
+            int (*sb_child_main)(void) = dlsym(sbh, "ame_shaderc_sandbox_child_main");
+            if (sb_child_main) {
+                return sb_child_main();
+            }
+        }
+        fprintf(stderr, "[shaderc-sandbox] child entry unavailable\n");
+        return 1;
+    }
+
     if (pJLI_Launch) {
         return pJLI_Launch(argc, (const char **)argv,
                    0, NULL, // sizeof(const_jargs) / sizeof(char *), const_jargs,

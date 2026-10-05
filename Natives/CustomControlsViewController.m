@@ -1,4 +1,6 @@
 #import "CustomControlsViewController.h"
+// ★ [GLASS-LIQUID] 材质统一走风格层(AmeGlassEffect):iOS≥26 ⇒ 系统 UIGlassEffect
+#import "UIKit+GlassSurface.h"
 #import "DBNumberedSlider.h"
 #import "FileListViewController.h"
 #import "LauncherPreferences.h"
@@ -72,6 +74,7 @@
     self.resizeView = [[ControlHandleView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
     self.resizeView.backgroundColor = self.view.tintColor;
     self.resizeView.layer.cornerRadius = self.resizeView.frame.size.width / 2;
+    self.resizeView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.resizeView.clipsToBounds = YES;
     self.resizeView.hidden = YES;
     [self.resizeView addGestureRecognizer:[[UIPanGestureRecognizer alloc]
@@ -644,13 +647,15 @@ CGFloat currentY;
 
     UIBlurEffectStyle blurStyle = UIBlurEffectStyleSystemMaterial;
     UIVisualEffectView *blurView;
-    blurView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:blurStyle]];
+    // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect(不再直接 UIBlurEffect)
+    blurView = [[UIVisualEffectView alloc] initWithEffect:AmeGlassEffect(blurStyle)];
     blurView.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin;
     blurView.frame = CGRectMake(
         (self.view.frame.size.width - MAX(tempW, tempH))/2,
         (self.view.frame.size.height - MIN(tempW, tempH))/2,
         MAX(tempW, tempH), MIN(tempW, tempH));
     blurView.layer.cornerRadius = 10.0;
+    blurView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     blurView.clipsToBounds = YES;
     [self.view addSubview:blurView];
 
@@ -904,6 +909,30 @@ CGFloat currentY;
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+/// 解析真正持有本编辑面板的 CustomControlsViewController。
+/// 设置路径会把 CCVC 包进 UINavigationController 后再 present，此时
+/// presentingViewController 指向的是那个导航控制器；直接向它发
+/// doUpdateButton:from:to: 即 unrecognized selector 闪退。
+/// 这里逐级展开容器（导航控制器 / 上层 presenter），并对最终目标做
+/// respondsToSelector 兜底，任何呈现结构都不会再崩。
+- (CustomControlsViewController *)ownerControlsViewController {
+    UIViewController *candidate = self.presentingViewController;
+    while (candidate != nil) {
+        if ([candidate isKindOfClass:CustomControlsViewController.class]) {
+            return (CustomControlsViewController *)candidate;
+        }
+        if ([candidate isKindOfClass:UINavigationController.class]) {
+            for (UIViewController *child in ((UINavigationController *)candidate).viewControllers) {
+                if ([child isKindOfClass:CustomControlsViewController.class]) {
+                    return (CustomControlsViewController *)child;
+                }
+            }
+        }
+        candidate = candidate.presentingViewController;
+    }
+    return nil;
+}
+
 - (void)actionEditFinish {
     if (self.switchFwdLock) {
         self.targetButton.properties[@"forwardLock"] = @(self.switchFwdLock.isOn);
@@ -920,8 +949,10 @@ CGFloat currentY;
         }
     }
 
-    [(CustomControlsViewController *)self.presentingViewController
-        doUpdateButton:self.targetButton from:self.oldProperties to:newProperties];
+    CustomControlsViewController *owner = [self ownerControlsViewController];
+    if (owner != nil && [owner respondsToSelector:@selector(doUpdateButton:from:to:)]) {
+        [owner doUpdateButton:self.targetButton from:self.oldProperties to:newProperties];
+    }
     self.oldProperties = nil;
     [self dismissViewControllerAnimated:YES completion:nil];
 }

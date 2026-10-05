@@ -14,8 +14,20 @@
 
 @implementation ControlButton
 
+// ★ [KB-SPACE] 屏幕上的自定义控件(含 SPECIALBTN_MENU 圆形菜单键、摇杆、子按钮等)
+//   一律不参与 UIKit 键盘焦点:游戏内按空格/回车/方向键/Tab 不会激活它们。
+//   这些控件本就只走触摸/手势(null/长按/滑动),禁用焦点不影响任何既有行为。
+- (BOOL)canBecomeFocused { return NO; }
+
 + (void)load {
+    // ★ [DEMINE] objc_getMetaClass("_NSPredicateUtilities") 是 Apple 私有类：某些 iOS 版本
+    //   上不存在时返回 nil，紧随其后的 class_addMethod(nil, ...) 会在 +load(镜像加载期、
+    //   main 之前)直接崩。缺类则跳过整套 predicate 函数注入(这些函数只被自定义控件的
+    //   表达式求值用到，缺失时由 -processFunctions 的显式替换兜底)。
     Class NSPredicateUtilities = objc_getMetaClass("_NSPredicateUtilities");
+    if (NSPredicateUtilities == nil) {
+        return;
+    }
 
     unsigned int count;
     Method *list = class_copyMethodList(object_getClass(NSPredicateUtilitiesExternal.class), &count);
@@ -23,6 +35,7 @@
         Method method = list[i];
         class_addMethod(NSPredicateUtilities, method_getName(method), method_getImplementation(method), method_getTypeEncoding(method));
     }
+    if (list) free(list);   // ★ [DEMINE] class_copyMethodList 返回 malloc 的数组，原来未释放(一次性泄漏)
 }
 
 + (id)buttonWithProperties:(NSMutableDictionary *)propArray {
@@ -112,8 +125,15 @@
 }
 
 - (CGFloat)calculateDynamicPos:(NSString *)string {
+    // ★ [DEMINE] 本工程 Release 未定义 NS_BLOCK_ASSERTIONS ⇒ NSAssert 在发布包中
+    //   仍然生效。按钮被移出父视图后若仍触发一次坐标计算(布局/编辑收尾竞态)，
+    //   NSAssert 会让【整个 App】崩。降级为记日志并返回 0 —— 正常运行 superview
+    //   非 nil，行为不变。
+    if (self.superview == nil) {
+        NSLog(@"[DEMINE] ControlButton -calculateDynamicPos called with nil superview; returning 0");
+        return 0;
+    }
     CGRect screenBounds = self.superview.bounds;
-    NSAssert(self.superview, @"Why is it null");
     CGFloat screenScale = [[UIScreen mainScreen] scale];
 
     CGFloat screenWidth = dpToPx(screenBounds.size.width);
@@ -166,7 +186,12 @@
 }
 
 - (void)update {
-    NSAssert(self.superview != nil, @"should not be nil");
+    // ★ [DEMINE] 见 -calculateDynamicPos：NSAssert 在发布包中仍生效，按钮脱离父视图
+    //   后的一次 update 会崩整个 App。降级为记日志并跳过本次更新(正常路径不变)。
+    if (self.superview == nil) {
+        NSLog(@"[DEMINE] ControlButton -update called with nil superview; skipping");
+        return;
+    }
 
     self.displayInGame = [self.properties[@"displayInGame"] boolValue];
     self.displayInMenu = [self.properties[@"displayInMenu"] boolValue];

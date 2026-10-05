@@ -111,7 +111,7 @@ static const void *kIconLoaderImageViewKey = &kIconLoaderImageViewKey;
         _downloadSemaphore = dispatch_semaphore_create(kMaxConcurrentDownloads);
 
         // 同步队列（保护 _inFlightRequests）
-        _syncQueue = dispatch_queue_create("com.angelaura.iconloader.sync", DISPATCH_QUEUE_SERIAL);
+        _syncQueue = dispatch_queue_create("com.glass.iconloader.sync", DISPATCH_QUEUE_SERIAL);
 
         // 进行中请求字典
         _inFlightRequests = [NSMutableDictionary dictionary];

@@ -84,13 +84,3 @@
 "preference.detail.auto_ram" = "자동 RAM 할당 활성화하기";
 "preference.detail.allocated_memory" = "Minecraft 메모리 할당 조절";
 "controller_configurator.playstation.title.named_back" = "선택";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "바닐라 %@ 설치에 실패했습니다.\n\n%@이(가) 설치되지 않았습니다. 네트워크를 확인한 후 다시 시도하세요.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "유리 질감";
-"i18n_str_2069" = "끔";
-"i18n_str_2070" = "표준";
-"i18n_str_2071" = "강";
-"i18n_str_2072" = "리퀴드 글라스";

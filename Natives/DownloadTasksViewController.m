@@ -57,12 +57,14 @@ static const CGFloat kSectionInset = 16.0;
 - (void)setupUI {
     self.contentView.backgroundColor = [UIColor secondarySystemBackgroundColor];
     self.contentView.layer.cornerRadius = kCardCornerRadius;
+    self.contentView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.contentView.layer.masksToBounds = YES;
 
     self.iconImageView = [[UIImageView alloc] init];
     self.iconImageView.translatesAutoresizingMaskIntoConstraints = NO;
     self.iconImageView.contentMode = UIViewContentModeScaleAspectFit;
     self.iconImageView.layer.cornerRadius = 8.0;
+    self.iconImageView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.iconImageView.layer.masksToBounds = YES;
     self.iconImageView.backgroundColor = [UIColor tertiarySystemBackgroundColor];
     self.iconImageView.tintColor = [UIColor secondaryLabelColor];
@@ -81,6 +83,7 @@ static const CGFloat kSectionInset = 16.0;
     self.typeTagLabel.textColor = [UIColor whiteColor];
     self.typeTagLabel.backgroundColor = [UIColor systemBlueColor];
     self.typeTagLabel.layer.cornerRadius = 4.0;
+    self.typeTagLabel.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.typeTagLabel.layer.masksToBounds = YES;
     self.typeTagLabel.textAlignment = NSTextAlignmentCenter;
     [self.contentView addSubview:self.typeTagLabel];
@@ -90,6 +93,7 @@ static const CGFloat kSectionInset = 16.0;
     self.sourceTagButton.titleLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
     self.sourceTagButton.contentEdgeInsets = UIEdgeInsetsMake(2, 6, 2, 6);
     self.sourceTagButton.layer.cornerRadius = 4.0;
+    self.sourceTagButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.sourceTagButton.layer.masksToBounds = YES;
     self.sourceTagButton.userInteractionEnabled = NO;
     [self.contentView addSubview:self.sourceTagButton];
@@ -149,6 +153,7 @@ static const CGFloat kSectionInset = 16.0;
     self.primaryActionButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
     self.primaryActionButton.contentEdgeInsets = UIEdgeInsetsMake(4, 10, 4, 10);
     self.primaryActionButton.layer.cornerRadius = 8.0;
+    self.primaryActionButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.primaryActionButton.layer.masksToBounds = YES;
     [self.primaryActionButton addTarget:self action:@selector(primaryActionTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.contentView addSubview:self.primaryActionButton];
@@ -159,6 +164,7 @@ static const CGFloat kSectionInset = 16.0;
     self.secondaryActionButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
     self.secondaryActionButton.contentEdgeInsets = UIEdgeInsetsMake(4, 10, 4, 10);
     self.secondaryActionButton.layer.cornerRadius = 8.0;
+    self.secondaryActionButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.secondaryActionButton.layer.masksToBounds = YES;
     [self.secondaryActionButton addTarget:self action:@selector(secondaryActionTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.contentView addSubview:self.secondaryActionButton];
@@ -315,7 +321,8 @@ static const CGFloat kSectionInset = 16.0;
                 NSString *speedText = [self compactSpeedText:task.speed];
                 if (speedText.length > 0) {
                     self.speedLabel.text = [NSString
-                        stringWithFormat:NSLocalizedString(@"download.progress.file_count_short",
+                        // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+                        stringWithFormat:localize(@"download.progress.file_count_short",
                                                            @"%1$ld/%2$ld · %3$@"),
                         (long)task.completedFileCount, (long)task.totalFileCount, speedText];
                 } else {
@@ -714,6 +721,7 @@ static const CGFloat kSectionInset = 16.0;
     self.headerView.translatesAutoresizingMaskIntoConstraints = NO;
     self.headerView.backgroundColor = [UIColor secondarySystemBackgroundColor];
     self.headerView.layer.cornerRadius = kCardCornerRadius;
+    self.headerView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     [self.view addSubview:self.headerView];
 
     self.titleLabel = [[UILabel alloc] init];
@@ -735,7 +743,8 @@ static const CGFloat kSectionInset = 16.0;
     self.historyButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.historyButton setImage:[UIImage systemImageNamed:@"clock.arrow.circlepath"] forState:UIControlStateNormal];
     self.historyButton.tintColor = [UIColor labelColor];
-    self.historyButton.accessibilityLabel = NSLocalizedString(@"download.history.entry", @"历史");
+    // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+    self.historyButton.accessibilityLabel = localize(@"download.history.entry", @"历史");
     [self.historyButton addTarget:self action:@selector(historyTapped:) forControlEvents:UIControlEventTouchUpInside];
     [self.headerView addSubview:self.historyButton];
 
@@ -973,6 +982,7 @@ static const CGFloat kSectionInset = 16.0;
     [button setTitleColor:selected ? [UIColor whiteColor] : [UIColor labelColor] forState:UIControlStateNormal];
     button.backgroundColor = selected ? [UIColor systemBlueColor] : [UIColor secondarySystemBackgroundColor];
     button.layer.cornerRadius = 8.0;
+    button.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     button.layer.masksToBounds = YES;
     button.contentEdgeInsets = UIEdgeInsetsMake(8, 12, 8, 12);
 

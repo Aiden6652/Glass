@@ -19,13 +19,3 @@
 "Settings" = "Көйләүҙәр";
 
 "preference.title.renderer" = "Рендерер";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Failed to install vanilla %@.\n\n%@ was not installed. Please check your network and try again.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Быяла стиле";
-"i18n_str_2069" = "Һүнгән";
-"i18n_str_2070" = "Стандарт";
-"i18n_str_2071" = "Көслө";
-"i18n_str_2072" = "Шыйыҡ быяла";

@@ -33,13 +33,3 @@
 "preference.title.java_args" = "JVM Launch argumenten";
 "preference.title.auto_ram" = "Automatische RAM";
 "preference.detail.auto_ram" = "Schakel in de automatische RAM aanpasser in";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Kan vanilla %@ niet installeren.\n\n%@ is niet geïnstalleerd. Controleer je netwerkverbinding en probeer het opnieuw.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Glasstijl";
-"i18n_str_2069" = "Uit";
-"i18n_str_2070" = "Standaard";
-"i18n_str_2071" = "Sterk";
-"i18n_str_2072" = "Vloeibaar glas";

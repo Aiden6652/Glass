@@ -52,7 +52,7 @@
     *   `make java`: 构建 Java 应用。
     *   `make jre`: 下载并解压 iOS JRE。
     *   `make assets`: 编译应用资源 (如图标)。
-    *   `make payload`: 组装应用包 (Glass.app)。
+    *   `make payload`: 组装应用包 (AngelAuraAmethyst.app)。
     *   `make package`: 生成最终的 `.ipa` 或 `.tipa` 安装包。
 
 3.  **可选构建参数**:
@@ -143,7 +143,7 @@
 构建产物：
 *   `org.angelauramc.amethyst-ios.ipa`: 标准 IPA 安装包
 *   `org.angelauramc.amethyst-ios-trollstore.tipa`: TrollStore 专用安装包
-*   `Glass.dSYM`: 调试符号文件
+*   `AngelAuraAmethyst.dSYM`: 调试符号文件
 
 ## 其他信息
 

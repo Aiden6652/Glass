@@ -201,6 +201,7 @@
 "preference.detail.modLoaderSource" = "Source policy for Fabric / Forge / NeoForge meta, maven and installer downloads. Mirror first uses the BMCLAPI mirror.";
 "preference.title.mirror_policy-official_first" = "Official First";
 "preference.title.mirror_policy-mirror_first" = "Mirror First";
+"preference.title.mirror_policy-auto" = "Auto (mirror first in mainland China)";
 "preference.title.mod_mirror" = "Mod Mirror Source";
 "preference.detail.mod_mirror" = "Choose the mirror source for mod/shader/resourcepack/datapack/modpack/world API and file downloads.";
 "preference.title.mod_mirror-official" = "Official Source";
@@ -244,6 +245,16 @@
 "preference.title.renderer.debug.zink" = "Zink (Mesa 25.0.7) - exports OpenGL 4.1";
 "preference.title.renderer.debug.ltw" = "LTW - OpenGL Core→ES wrapper (1.17+)";
 "preference.title.renderer.debug.vulkan" = "MoltenVK (26.2+) - exports vulkan 1.4";
+"preference.title.renderer.debug.mithril" = "Mithril (1.17+) - OpenGL 3.3 Core via Vulkan/Metal, EXPERIMENTAL";
+"preference.title.renderer.debug.mobilegl" = "MobileGL Vulkan (1.17+) - OpenGL 3.3 Core, EXPERIMENTAL";
+"preference.title.renderer.debug.mobilegl_gles" = "MobileGL GLES (1.17+) - OpenGL 3.3 Core via OpenGL ES, EXPERIMENTAL";
+"preference.title.renderer.debug.sfpew" = "SFPEW (<=1.16.x) - fixed-function emulation, backend defaults to MobileGlues, EXPERIMENTAL";
+"preference.title.renderer.debug.metal" = "Metal (metallum)";
+/* ★ [RENDERER-GAP] imported from Gsjsjzhznsz/Air-Minecraft-iOS-Launcher */
+"preference.title.renderer.debug.vgpu" = "VGPU (<=1.12) - gl4es fork, enhanced shader syntax, EXPERIMENTAL";
+"preference.title.renderer.debug.virgl" = "VirGL (<=26.2) - Mesa virgl guest + vtest server, EXPERIMENTAL";
+/* ★ [DROP-NGG4ES] 原 "preference.title.renderer.debug.nggl4es" 文案已随该支移除。 */
+"preference.title.renderer.debug.gl4eszl2" = "GL4ES (ZL2 classic) - string-rewrite GLSL to ESSL, EXPERIMENTAL";
 
 "preference.detail.renderer" = "Change the OpenGL render engine to use. Zink is temporarily disabled on iOS 16 and later to diagnose issues.";
 
@@ -311,12 +322,27 @@
 "preference.detail.recording_hide" = "Hides controls from screenshot and screen recording while they remain visible on the screen.";
 "preference.title.gesture_mouse" = "Mouse gestures";
 "preference.detail.gesture_mouse" = "Enables gestures, such as tap to place block, hold to break block, scrolling with 2 fingers";
+"preference.title.bt_pointer_enable" = "Bluetooth mouse / trackpad";
+"preference.detail.bt_pointer_enable" = "Uses a Bluetooth mouse or trackpad as a real pointer (move / left / right click). Only takes over when no GameController mouse is reported, so it never conflicts with touch or hardware-mouse input. On iPhone, enable Settings > Accessibility > Touch > AssistiveTouch > Pointer Devices first; iPad works directly.";
 "preference.title.gesture_hotbar" = "Hotbar gestures";
 "preference.detail.gesture_hotbar" = "Enables gestures, such as touch the hotbar slot, swap items between hand, throw items";
 "preference.title.disable_haptics" = "Disable on-screen haptics";
 "preference.detail.disable_haptics" = "Disable haptic feedback (vibration) effects in the game to save battery.";
 "preference.title.press_duration" = "Long-press duration (ms)";
 "preference.detail.press_duration" = "Trigger press duration for destroying blocks and dropping items.";
+"preference.title.tap_click_enable" = "Tap = left click";
+"preference.detail.tap_click_enable" = "A quick tap sends one full left-click. Turn off to restore the old behavior (in-game tap = right-click/place, long-press = left-click/break).";
+"preference.title.tap_click_duration" = "Tap max duration (ms)";
+"preference.detail.tap_click_duration" = "A touch held for less than this counts as a tap.";
+"preference.title.tap_click_move" = "Tap max movement (pt)";
+"preference.detail.tap_click_move" = "A touch that moves less than this counts as a tap; a larger movement still rotates the view.";
+"preference.title.tap_click_mode" = "Tap button";
+"preference.detail.tap_click_mode" = "Auto decides by what the crosshair points at: entity/air -> attack (left); interactable block -> use (right); holding a block -> place (right). Left/right always send that button.";
+"preference.title.tap_click_mode-auto" = "Auto (by target)";
+"preference.title.tap_click_mode-left" = "Always left";
+"preference.title.tap_click_mode-right" = "Always right";
+"preference.title.tap_click_button_right" = "Tap sends right-click instead";
+"preference.detail.tap_click_button_right" = "Legacy. On forces tap = right-click (same as mode = Always right).";
 "preference.title.button_scale" = "On-screen button scale (%)";
 "preference.detail.button_scale" = "Upscale them if buttons are too small, usually needed for iPad users.";
 "preference.title.mouse_scale" = "Mouse scaling (%)";
@@ -457,6 +483,7 @@
 "preference.profile.title.version_type" = "Version type";
 "preference.profile.title.default_touch_control" = "Touch controls";
 "preference.profile.title.default_gamepad_control" = "Gamepad controls";
+"preference.profile.title.lwjgl_version" = "LWJGL version";
 
 "profile.error.name_exists" = "A profile with that name already exists. Please use another name.";
 "profile.section.instance" = "Game Instance settings";
@@ -651,6 +678,14 @@
 "launch.cancel_confirm_message" = "Canceling will terminate the current game loading process and return to the launcher.";
 "launch.cancel_confirm_yes" = "Cancel";
 "launch.cancel_confirm_no" = "Keep waiting";
+"launch.progress.stage.prepare_env" = "Preparing environment...";
+"launch.progress.stage.jit_ready" = "Preparing JIT...";
+"launch.progress.stage.renderer" = "Resolving renderer & graphics API...";
+"launch.progress.stage.runtime" = "Loading runtime (Java / memory)...";
+"launch.progress.stage.args_ready" = "Assembling launch arguments...";
+"launch.progress.stage.jvm_starting" = "Starting Java VM...";
+"launch.progress.stage.waiting_first_frame" = "Waiting for the game window...";
+"launch.progress.stage.completed" = "Launch complete";
 
 // AI Fix Feature
 "ai.fix.conversation" = "Conversation";
@@ -1735,6 +1770,8 @@
 "i18n_str_1208" = "No versions available";
 "i18n_str_1209" = "Load failed. Please check the network.";
 "i18n_str_1210" = "Load failed: %@";
+// ★ [NEOFORGE-FIX] NeoForge 尚未为该 Minecraft 版本发版（诚实告知，不谎报版本）
+"neoforge.no_version_for_mc" = "No NeoForge build has been released for Minecraft %@ yet";
 "i18n_str_1211" = "Select installation method";
 "i18n_str_1212" = "Original (Vanilla)";
 "i18n_str_1213" = "Pure Minecraft, without any mod loader";
@@ -1903,6 +1940,8 @@
 "i18n_str_2017" = "Frosted Glass";
 "i18n_str_2018" = "Half Width";
 "i18n_str_2019" = "Compact";
+"i18n_str_9101" = "Tall";
+"i18n_str_9102" = "Large";
 "i18n_str_2020" = "Switch to Full Width";
 "i18n_str_2021" = "Hide this Tile";
 "i18n_str_2022" = "Purple";
@@ -1955,12 +1994,102 @@
 "preference.auto" = "Auto";
 "preference.auto_select" = "Auto";
 
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Failed to install vanilla %@.\n\n%@ was not installed. Please check your network and try again.";
+"i18n_str_jit26_pending" = "JIT: Enabled (attaches on launch)";
+"jit.timeout_retry_msg" = "Timed out waiting for JIT (120s). The JIT tool may not have responded. Tap Retry to try again, or attach a debugger manually and retry.";
+"jit.retry" = "Retry";
 
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Glass Style";
-"i18n_str_2069" = "Off";
-"i18n_str_2070" = "Standard";
-"i18n_str_2071" = "Strong";
-"i18n_str_2072" = "Liquid Glass";
+// Task 134: JIT enabler picker (ported from Air)
+"preference.debug.jit_enabler.auto" = "Auto (recommended)";
+"preference.debug.jit_enabler.stikjit" = "StikDebug / StikJIT";
+"preference.debug.jit_enabler.stikdebug" = "StikDebug (stikdebug://)";
+"preference.debug.jit_enabler.sidestore" = "SideStore";
+"preference.debug.jit_enabler.stosdebug" = "StosDebug";
+"preference.debug.jit_enabler.jitstreamer" = "JitStreamer-EB";
+"preference.debug.jit_enabler.trollstore" = "TrollStore";
+"preference.debug.jit_enabler.manual" = "Manual (attach a debugger yourself)";
+"preference.title.jit_enabler" = "JIT Enabler";
+"preference.detail.jit_enabler" = "Choose the app used to enable JIT. If you don't have StikDebug installed, pick SideStore, StosDebug, JitStreamer-EB or TrollStore instead, otherwise tapping Launch does nothing. Auto (default) tries TrollStore, then StikDebug, then SideStore depending on your device.";
+"preference.title.jit26_script_disable" = "Disable iOS 26 JS-Script JIT";
+"preference.detail.jit26_script_disable" = "Stop sending UniversalJIT26.js to the JIT tool when launching the game (plain debugger-attach JIT). Only turn this on if your tool doesn't support scripts or the script misbehaves; devices that need system-level memory mapping (TXM) may fail to launch the game with this enabled.";
+"i18n_str_jit26_not_ready" = "JIT26 debugger is not ready: the JIT breakpoint went unanswered. Please re-enable JIT with the Universal script assigned in StikDebug, then tap Play again.";
+
+// Launcher update check (ZL2 style dialog, startup auto-check)
+"update_dialog.title" = "New version available";
+"update_dialog.version_from" = "%@  (current: %@)";
+"update_dialog.published_at" = "Published %@";
+"update_dialog.ignore" = "Ignore this version";
+"update_dialog.later" = "Later";
+"update_dialog.update" = "Update";
+"preference.title.auto_check_update" = "Check for Updates on Launch";
+"preference.detail.auto_check_update" = "Automatically check GitHub Releases when the launcher starts. At most once per hour; versions you chose to ignore are not shown again.";
+
+// ★ [GLASSUI] glass effect (switch + strength slider)
+"preference.title.glass_effect" = "Glass Effect";
+"preference.title.glass_strength" = "Glass Strength";
+
+// ★ [GLASS-STYLE] interface style layering (native / system liquid glass)
+//   iOS <  26 ⇒ Native (system materials only, no hand-drawn glass)
+//   iOS >= 26 ⇒ Auto defaults to Liquid Glass (system UIGlassEffect)
+"preference.title.glass_style" = "Interface Style";
+"preference.style.auto" = "Auto";
+"preference.style.native" = "Native";
+"preference.style.liquid" = "Liquid Glass";
+"preference.style.footer.supported" = "Auto follows the system: Liquid Glass on iOS 26 and later, Native on earlier versions.";
+"preference.style.footer.unsupported" = "This system is older than iOS 26, so only the Native style is available. The launcher uses standard system materials instead of drawing its own glass.";
+"preference.style.footer.native" = "Native style is in effect: no hand-drawn glass overlay is added, and the glass switch and strength below are unavailable.";
+// ★ [GLASS-LIQUID] 纯系统材质 + 可选自绘高光
+"preference.title.glass_handdrawn" = "Hand-drawn Highlight";
+"preference.style.footer.pure" = "System materials only (default): the material is provided entirely by the system (Liquid Glass on iOS 26+) — no hand-drawn glass is added.";
+"preference.style.footer.handdrawn" = "Hand-drawn highlight is on: an extra rim/inner highlight is drawn on top of the system glass (optional).";
+
+// ★ [LANG-SWITCH] launcher language switch (follow system + auto-enumerated .lproj)
+"preference.title.launcher_language" = "Language";
+"preference.lang.title" = "Language";
+"preference.lang.follow_system" = "Follow System";
+"preference.lang.section.system" = "System";
+"preference.lang.section.available" = "Available Languages";
+"preference.lang.search_placeholder" = "Search languages";
+"preference.lang.restart_hint.title" = "Language Changed";
+"preference.lang.restart_hint.message" = "The interface has been reloaded in the selected language.";
+
+// ★ [JIT-WAIT] 主启动 JIT 等待/调起失败提示(launchJVM 失败分支 + ame139_requestJIT)
+"jit.wait.auto" = "Waiting for JIT to become ready. Enable JIT for this app with your JIT tool (TrollStore, StikDebug, SideStore / SideJIT, JitStreamer, …), then return to the launcher. Waiting up to 30 seconds…";
+"jit.wait.manual" = "Please go to your JIT tool now and enable JIT for this app. Waiting up to 30 seconds…";
+"jit.wait.trollstore" = "Enable JIT for this app in TrollStore, then return to the launcher. Waiting up to 30 seconds…";
+"jit.wait.stikdebug" = "Enable JIT for this app in StikDebug, then return to the launcher. Waiting up to 30 seconds…";
+"jit.wait.sidestore" = "Enable JIT for this app in SideStore / SideJIT, then return to the launcher. Waiting up to 30 seconds…";
+"jit.wait.jitstreamer" = "Enable JIT for this app through JitStreamer, then return to the launcher. Waiting up to 30 seconds…";
+"jit.wait.stosdebug" = "Enable JIT for this app with StosDebug, then return to the launcher. Waiting up to 30 seconds…";
+"jit.wait.abort.title" = "JIT not available";
+"jit.wait.timeout.message" = "Tried to launch your JIT enabler, but JIT was not ready within 30 seconds, so the launch was canceled. Enable JIT for this app and try again (you can also change the JIT enabler in Settings).";
+"jit.wait.timeout.foreground.message" = "Tried to launch your JIT enabler, but JIT was still not detected after you returned to the launcher (up to 30 seconds of active waiting in the foreground, 180 seconds total). The launch was canceled. Enable JIT for this app and try again (you can also change the JIT enabler in Settings).";
+"jit.wait.blocked.message" = "The JIT debugger is not responding (nothing is servicing the breakpoint). Make sure JIT is enabled in a way that keeps the debugger attached and uses the UniversalJIT26 script, then launch again.";
+"jit.wait.missing.tool" = "No JIT enabler tool was detected. Install or check %@, or change the JIT enabler in Settings, then try again.";
+"jit.wait.missing.generic" = "No JIT enabler tool was detected. Install a JIT tool (TrollStore, StikDebug, SideStore / SideJIT, JitStreamer, …), or change the JIT enabler in Settings, then try again.";
+
+/* ★ [I18N] launcher tab titles / language picker keys (added by I18N fix) */
+"tab.home" = "Home";
+"tab.download" = "Download";
+"tab.ai" = "AI";
+"tab.instances" = "Instances";
+"tab.settings" = "Settings";
+
+
+/* ★ [I18N] key-set alignment vs zh-Hans base; English placeholder pending translation */
+"preference.detail.debug_always_attached_jit" = "preference.detail.debug_always_attached_jit";
+"preference.title.debug_universal_script_jit" = "preference.title.debug_universal_script_jit";
+"preference.title.debug_always_attached_jit" = "preference.title.debug_always_attached_jit";
+"preference.title.renderer.release.mg" = "preference.title.renderer.release.mg";
+"login.warn.title.ios19_jitdead" = "login.warn.title.ios19_jitdead";
+"login.warn.message.ios19_jitdead" = "login.warn.message.ios19_jitdead";
+"preference.group.runtime" = "Memory & Performance";
+"preference.group.java" = "Java & Launch Options";
+
+/* ★ [HOST-BUG-A] AI 页面顶部标题本地化 */
+"ai.session_list.title" = "Chats";
+"ai.provider_config.title" = "Provider Settings";
+"ai.provider_config.edit" = "Edit Provider";
+"ai.provider_config.add" = "Add Provider";
+"ai.system_prompt.title" = "System Prompt";
+"ai.assistant.title" = "AI Assistant";
+"ai.session.new" = "New Chat";

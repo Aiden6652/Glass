@@ -8,6 +8,17 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<!-- ★ [I18N] 声明我们真正支持的界面语言：iOS 会据此把系统语言(含变体)匹配到对应
+	     .lproj（并用于「设置 > App > 语言」列表）。与 AmeLauncherSupportedLanguageCodes() 一致；
+	     未列出的 .lproj 是上游遗留空壳，不声明，避免系统误配到"没翻译的语言"。 -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>zh-Hant</string>
+		<string>en</string>
+		<string>ja</string>
+		<string>km</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Glass</string>
 	<key>CFBundleExecutable</key>
@@ -96,7 +107,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>5.0.0</string>
+	<string>5.1.0</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleURLTypes</key>
@@ -111,7 +122,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>5.0.0</string>
+	<string>5.1.0</string>
 	<key>GCSupportedGameControllers</key>
 	<array>
 		<dict>
@@ -131,6 +142,15 @@
 		<string>santander</string>
 		<string>shareddocuments</string>
 		<string>zerotier</string>
+		<!-- ★ [POCKETJ-JIT] JIT 获取/使能工具 scheme(PocketJ INTEGRATION.md 要求:
+		     若用 canOpenURL 探测 stikdebug 就必须登记)。本 App 目前对 stikjit://
+		     只用 openURL 的 completionHandler,但登记后 canOpenURL 探测也可用,
+		     便于设置页显示"是否已安装"、以及后续 stikdebug:// 路径。 -->
+		<string>stikdebug</string>
+		<string>stikjit</string>
+		<string>sidestore</string>
+		<string>trollstore</string>
+		<string>stosdebug</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
@@ -179,8 +199,9 @@
 		<string>audio</string>
 		<string>fetch</string>
 	</array>
-	<key>UIDesignRequiresCompatibility</key>
-	<true/>
+	<!-- ★ [GLASSUI] 2026-10-03 移除此键:UIDesignRequiresCompatibility = true 会让 App 退回
+	     iOS 26 之前的外观,等于主动放弃系统液态玻璃。上游 5.1.0 置 true,fork 版里没有此键;
+	     两侧对比已确认:去掉才出玻璃。 -->
 	<key>UIDeviceFamily</key>
 	<array>
 		<integer>1</integer>
@@ -197,6 +218,16 @@
 		<string>metal</string>
 	</array>
 	<key>UIStatusBarHidden</key>
+	<true/>
+	<!-- Air Task 56：iPadOS 26 起 iPad 默认进入窗口化多任务，SDLK 窗口可被系统
+	     任意缩放/移动。MC 26.3 的 SDL3 路径随后会调用 requestGeometryUpdate
+	     并把几何变更（Code=101）当作「窗口被最小化」处理，进而触发
+	     SDL_EVENT_WINDOW_MINIMIZED(0x209) → onIconified(true) →
+	     GlSurface.acquireNextTexture 抛 SurfaceException → 重建立面
+	     EGL_BAD_ALLOC，画面全黑。声明本 App 必须全屏即可让系统不再下发这类
+	     几何变更（iPhone 本就不支持窗口化，不受影响；此处主要为 iPad 兜底）。
+	     与 Air 启动器的做法一致。 -->
+	<key>UIRequiresFullScreen</key>
 	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>

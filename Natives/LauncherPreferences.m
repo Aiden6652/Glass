@@ -4,6 +4,7 @@
 #import "PLPreferences.h"
 #import "UIKit+hook.h"
 #import <CoreFoundation/CoreFoundation.h>
+#import <os/proc.h>
 
 static PLPreferences* pref;
 
@@ -25,6 +26,98 @@ void toggleIsolatedPref(BOOL forceEnable) {
     // 用户必须重启启动器才能让 instancePath 重新计算。这里改为每次都刷新。
     pref.instancePath = [NSString stringWithFormat:@"%s/launcher_preferences.plist", getenv("POJAV_GAME_DIR")];
     [pref toggleIsolationForced:forceEnable];
+}
+
+#pragma mark - Task141 launch memory
+
+/// Task173（对齐参考仓库 Air）：设备安全堆顶。
+/// os_proc_available_memory() 返回当前进程可安全申请的内存（iOS 13+），
+/// 减去 1200 MB 原生预留（JVM 非堆 + 渲染面 + 系统开销）即为可安全承诺的 -Xmx。
+/// 返回 0 表示不支持（老系统/模拟器），退回物理内存 × 0.6。
+///
+/// [fix/1024-floor] 1024 MB 下限【只适用于 fallback 路径】。
+/// 权威读数路径（os_proc_available_memory 可用）不再做 1024 下限——
+/// iPhone X（3GB，extended VA）实测：available=1807MB -> 安全堆顶 607MB，
+/// 旧代码把 607 强抬到 1024，等于把钳制整个架空：preference 的 706MB
+/// "未超 1024" -> 不钳 -> Xmx706 + JVM 非堆 + MG shadow 纹理/native ->
+/// footprint 爬到 1539MB 后被 jetsam SIGKILL（native-crash.log 无崩溃记录、
+/// latestlog 凭空断在 unifont 字体加载 = SIGKILL 特征，43177bd 两次复现）。
+/// Air 原版同有此下限，但 Air 用户设备 ≥4GB（ceiling 本来就 > 1024），
+/// 下限无副作用；在 3GB 设备上它把"必死的 SIGKILL"换成"可控的 GC 抖动"。
+/// 权威路径宁可要小堆：堆小只是慢，超顶是死。
+static int ame173_safeHeapCeilingMB(void) {
+    static int cachedCeilingMB = -1;
+    if (cachedCeilingMB > 0) return cachedCeilingMB;
+    int ceilingMB = 0;
+    uint64_t avail = os_proc_available_memory();
+    if (avail > 0) {
+        int availMB = (int)(avail >> 20);
+        ceilingMB = availMB - 1200;
+        NSLog(@"[Task173] safe heap ceiling: os_proc_available_memory=%dMB -> Xmx ceiling %dMB (native reserve 1200MB, no floor on authoritative path)", availMB, ceilingMB);
+    }
+    if (ceilingMB <= 0) {
+        int physMB = (int)(NSProcessInfo.processInfo.physicalMemory >> 20);
+        ceilingMB = (int)(physMB * 0.6);
+        if (ceilingMB < 1024) ceilingMB = 1024;   // 仅 fallback：读数不可信时保底
+        NSLog(@"[Task173] safe heap ceiling: fallback 60%% of physical = %dMB (phys=%dMB)", ceilingMB, physMB);
+    }
+    cachedCeilingMB = ceilingMB;
+    return ceilingMB;
+}
+
+int ame141_currentLaunchAllocMem(void) {
+    int deviceMB = (int)(NSProcessInfo.processInfo.physicalMemory >> 20);
+    int allocmem;
+    if (getPrefBool(@"java.auto_ram")) {
+        // Flux 同款修复：jetsam 上限有两条抬升路径——越狱的
+        // com.apple.private.memorystatus，以及带 profile 签名的
+        // com.apple.developer.kernel.increased-memory-limit。只查前者会把正确
+        // entitled 的包按无 entitlement 的 0.25 算，小堆在加载界面静默 GC 空转。
+        BOOL raisedCeiling = getEntitlementValue(@"com.apple.private.memorystatus")
+            || getEntitlementValue(@"com.apple.developer.kernel.increased-memory-limit");
+        CGFloat autoRatio = raisedCeiling ? 0.5 : 0.25;
+        allocmem = (int)roundf(deviceMB * autoRatio);
+        NSLog(@"[Task141] launch memory from auto ratio %.2f x %dMB = %d MB", autoRatio, deviceMB, allocmem);
+    } else {
+        allocmem = (int)getPrefInt(@"java.allocated_memory");
+        NSLog(@"[Task141] launch memory from preference java.allocated_memory = %d MB", allocmem);
+    }
+    // 调试/A-B 覆盖：AMETHYST_MEM_MB=<n> 直接指定 -Xmx，无需改设置页。
+    const char *forcedMB = getenv("AMETHYST_MEM_MB");
+    if (forcedMB && forcedMB[0]) {
+        int forced = atoi(forcedMB);
+        if (forced > 0) {
+            NSLog(@"[Task141] launch memory overridden by AMETHYST_MEM_MB: %d MB -> %d MB", allocmem, forced);
+            allocmem = forced;
+        }
+    }
+    if (allocmem < 256) allocmem = 256;
+
+    // 只在超过设备安全堆顶时向下钳制（Air Task173）。
+    // 绝不能把健康值压小：上一版 "物理内存 × 0.70 − 1024" 会把 iPhone X 上
+    // 任何 > 953 MB 的设置硬压到 953 MB，反而制造内存不足。
+    //
+    // [fix/memorystatus-gate] 带 com.apple.private.memorystatus entitlement 的
+    // 构建【不钳】：SurfaceViewController 的 updateJetsamControl 会用
+    // memorystatus_control 把 jetsam 任务限额提到 allocmem + 1024（Air 同款，
+    // 越狱设备实证可设：Air 日志 "Successfully set Jetsam task limit
+    // (allocmem=1129 MB, limit=2153 MB)"）。此时钳制反而有害——用户按 Air
+    // 习惯手动调大实例内存（如 1129MB）会被压回 ceiling，制造
+    // limit 偏低的低顶。无 entitlement（限额提不上去，只能吃系统默认）时
+    // 保持钳制作为安全网。
+    const char *noClamp = getenv("AMETHYST_MEM_NO_CLAMP");
+    bool canRaiseJetsamLimit = getEntitlementValue(@"com.apple.private.memorystatus");
+    if (!(noClamp && noClamp[0] == '1') && !canRaiseJetsamLimit) {
+        int ceiling = ame173_safeHeapCeilingMB();
+        if (allocmem > ceiling) {
+            NSLog(@"[Task173] launch memory %dMB exceeds safe ceiling %dMB -- clamping (preference on disk preserved)", allocmem, ceiling);
+            allocmem = ceiling;
+        }
+    } else if (canRaiseJetsamLimit) {
+        NSLog(@"[Task173] memorystatus entitlement present -- jetsam limit will be raised to %d MB (allocmem %d + 1024 native); heap clamp bypassed", allocmem + 1024, allocmem);
+    }
+    NSLog(@"[Task141] final launch memory = %d MB (device %d MB, jetsam limit %d MB)", allocmem, deviceMB, allocmem + 1024);
+    return allocmem;
 }
 
 #pragma mark Download source migration
@@ -72,6 +165,34 @@ id getPrefObject(NSString *key) {
 }
 BOOL getPrefBool(NSString *key) {
     return [getPrefObject(key) boolValue];
+}
+
+#pragma mark - ★ [UI-LAYOUT-MIGRATE] / [TC-MOVEVIEW-MIGRATE] 统一解析函数
+
+/// ★ [UI-LAYOUT-MIGRATE] UI 布局唯一解析函数。
+/// 返回 @"vs"（标准，LauncherRootViewController）或 @"card"（卡片，LauncherCardLayoutViewController）。
+/// 按【物理机型】判定，不读遗留的 general.ui_layout —— 该键的值已在启动最早期被
+/// PLPreferences 迁移（iPhone 上的 card 主动写回 vs）。若今后确需读该键，请只在本
+/// 函数内读，让所有调用方（SceneDelegate 等）走同一解析口径，避免"各读各的"。
+NSString *ameResolveUILayout(void) {
+    NSString *model = [[UIDevice currentDevice].model lowercaseString];
+    BOOL isPad = [model containsString:@"ipad"];
+    if (!isPad && !([model containsString:@"iphone"] || [model containsString:@"ipod"])) {
+        // 未识别机型（模拟器）：idiom 兜底（此时 hook 尚未按机型分叉）。
+        isPad = (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
+    }
+    return isPad ? @"card" : @"vs";
+}
+
+/// ★ [TC-MOVEVIEW-MIGRATE] 「视角摇晃/移动视角」唯一解析函数。
+/// 该功能已移除：无论存量 control.mod_touch_moveview_enable 存什么，一律返回 NO。
+/// 启动迁移（PLPreferences）已把库里的 enable 主动写回 disable；这里是运行期口径保证，
+/// 防止迁移前已构造的会话 / 竞态 / 未落盘值漏网，并统一所有读取方。
+BOOL ameResolveTouchMoveViewEnabled(void) {
+    if (getPrefBool(@"control.mod_touch_moveview_enable")) {
+        NSLog(@"[TC-MOVEVIEW] legacy control.mod_touch_moveview_enable=enable ignored at runtime (feature removed) -> disabled");
+    }
+    return NO;
 }
 float getPrefFloat(NSString *key) {
     return [getPrefObject(key) floatValue];
@@ -169,6 +290,36 @@ UIEdgeInsets getDefaultSafeArea() {
 
 #pragma mark Java runtime
 
+// ★ [JRE-NEST] 判断一个目录是否是**可用的 JRE 根**。
+//   iOS 的 JRE 没有 bin/java(打包时被删)，判据是 release + lib/server/libjvm.dylib。
+static BOOL ameJREHomeLooksValid(NSString *dir) {
+    if (dir.length == 0) return NO;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    return [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"release"]] &&
+           [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"lib/server/libjvm.dylib"]];
+}
+
+// ★ [JRE-NEST] 归一化层级：解包若“多套一层”(如 java-8-openjdk/jre8-…/lib/…)，
+//   直接返回 java-8-openjdk 会得到死路径(目录在、libjvm 不在) ⇒ 运行期读不到 JRE。
+//   这里向下探测一层并自动纠正；仍找不到就打印实际布局并返回 nil(明确报错，不静默)。
+static NSString *ameNormalizeJREHome(NSString *dir) {
+    if (ameJREHomeLooksValid(dir)) return dir;
+    NSError *err = nil;
+    NSArray<NSString *> *subs = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:&err];
+    for (NSString *sub in subs) {
+        NSString *cand = [dir stringByAppendingPathComponent:sub];
+        BOOL isDir = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:cand isDirectory:&isDir] && isDir &&
+            ameJREHomeLooksValid(cand)) {
+            NSLog(@"★ [JRE-NEST] 归一化 JRE 层级: %@ -> %@", dir, cand);
+            return cand;
+        }
+    }
+    NSLog(@"★ [JRE-NEST] ERROR: %@ 缺 release / lib/server/libjvm.dylib，实际布局:", dir);
+    for (NSString *s in subs) NSLog(@"★ [JRE-NEST]     %@", s);
+    return nil;
+}
+
 NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion) {
     NSDictionary *pref = getPrefObject(@"java.java_homes");
     NSDictionary<NSString *, NSString *> *selected = pref[@"0"];
@@ -200,7 +351,11 @@ NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion) {
     }
 
     if ([NSFileManager.defaultManager fileExistsAtPath:selectedDir]) {
-        return selectedDir;
+        // ★ [JRE-NEST] 目录存在 ≠ 是可用的 JRE 根：探测真身(release+libjvm)并自动纠正一层嵌套。
+        NSString *normalized = ameNormalizeJREHome(selectedDir);
+        if (normalized) return normalized;
+        NSLog(@"★ [JRE-NEST] selected runtime invalid: %@", selectedDir);
+        return nil;
     } else {
         NSLog(@"Error: selected runtime for %@ does not exist: %@", defaultJRETag, selectedDir);
         return nil;
@@ -208,40 +363,136 @@ NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion) {
 }
 
 #pragma mark Renderer
-NSArray* getRendererKeys(BOOL containsDefault) {
-    NSMutableArray *array = @[
-        @"auto",
-        @ RENDERER_NAME_GL4ES,
-        @ RENDERER_NAME_MTL_ANGLE,
-        @ RENDERER_NAME_MOBILEGLUES,
-        @ RENDERER_NAME_VK_ZINK,
-        @ RENDERER_NAME_LTW,
-        @ RENDERER_NAME_VULKAN
-    ].mutableCopy;
 
+// 可选渲染器是否真的可用：对应的 dylib 必须已经打进 app 的 Frameworks 目录。
+//
+// 为什么需要这个判断：Mithril 的 libmithril.dylib 是预编译产物（需另外下载），
+// MobileGL 的 libMobileGL.dylib 默认不构建（源码体积大、编译慢，属可选依赖）。
+// 若把不存在的渲染器列进选择器，用户选中后 dlopen 失败，gl_bridge.m 的
+// dlsym_EGL() 直接返回 false，启动器弹不出有意义的错误，排查成本很高。
+// 因此按实际存在与否过滤：缺哪个 dylib 就不显示哪个选项。
+static BOOL rendererLibraryExists(NSString *fileName) {
+    if (fileName.length == 0) return NO;
+    NSString *path = [NSBundle.mainBundle.bundlePath
+        stringByAppendingPathComponent:[@"Frameworks" stringByAppendingPathComponent:fileName]];
+    return [[NSFileManager defaultManager] fileExistsAtPath:path];
+}
+
+// 候选渲染器表：key / 显示名 / 对应的 dylib 文件（为空表示始终可用）。
+// keys 与 names 由同一份表生成，避免两处手改导致下标错位。
+static NSArray<NSDictionary *> *rendererCandidates(void) {
+    return @[
+        @{@"key": @"auto",
+          @"name": localize(@"preference.title.renderer.debug.auto", nil),
+          @"file": @""},
+        @{@"key": @ RENDERER_NAME_GL4ES,
+          @"name": localize(@"preference.title.renderer.debug.gl4es", nil),
+          @"file": @ RENDERER_NAME_GL4ES},
+        @{@"key": @ RENDERER_NAME_MTL_ANGLE,
+          @"name": localize(@"preference.title.renderer.debug.angle", nil),
+          @"file": @ RENDERER_NAME_MTL_ANGLE},
+        @{@"key": @ RENDERER_NAME_MOBILEGLUES,
+          @"name": localize(@"preference.title.renderer.debug.mg", nil),
+          @"file": @ RENDERER_NAME_MOBILEGLUES},
+        @{@"key": @ RENDERER_NAME_VK_ZINK,
+          @"name": localize(@"preference.title.renderer.debug.zink", nil),
+          @"file": @ RENDERER_NAME_VK_ZINK},
+        @{@"key": @ RENDERER_NAME_LTW,
+          @"name": localize(@"preference.title.renderer.debug.ltw", nil),
+          @"file": @ RENDERER_NAME_LTW},
+        @{@"key": @ RENDERER_NAME_VULKAN,
+          @"name": localize(@"preference.title.renderer.debug.vulkan", nil),
+          @"file": @ RENDERER_NAME_VULKAN},
+        // Mithril (libmithril.dylib) 入口已停用：MobileGL 已可正常工作，
+        // 不再需要维护 Mithril 这条转译路径（其 dylib 需单独预编译）。
+        // @{@"key": @ RENDERER_NAME_MITHRIL,
+        //   @"name": localize(@"preference.title.renderer.debug.mithril", nil),
+        //   @"file": @ RENDERER_NAME_MITHRIL},
+        @{@"key": @ RENDERER_NAME_MOBILEGL,
+          @"name": localize(@"preference.title.renderer.debug.mobilegl", nil),
+          @"file": @ RENDERER_NAME_MOBILEGL},
+        @{@"key": @ RENDERER_NAME_MOBILEGL_GLES,
+          @"name": localize(@"preference.title.renderer.debug.mobilegl_gles", nil),
+          @"file": @ RENDERER_NAME_MOBILEGL_GLES},
+        // SimpleFPEWrapper（独立选项）：固定管线 (GL 1.x) 仿真层，仅供 <= 1.16.x。
+        // 与上面的叠加开关（video.sfpew_overlay）的区别：叠加是"选中某个 GLES 后端
+        // 再被 SFPEW 顶替"，这里是直接把 SFPEW 选为渲染器，后端由
+        // AMETHYST_SFPEW_BACKEND 指定（缺省 libmobileglues.dylib）。
+        // 两者最终的环境变量形态一致，只是入口不同。
+        @{@"key": @ RENDERER_NAME_SFPEW,
+          @"name": localize(@"preference.title.renderer.debug.sfpew", nil),
+          @"file": @ RENDERER_NAME_SFPEW},
+        // Metal（metallum / MetalUniversal）：原生 Metal 后端，对应 dylib 为
+        // libmetallum.dylib（由 metallum agent jar 在运行期解出到 App.app/Frameworks，
+        // 见 utils.h RENDERER_NAME_METAL 与 JavaLauncher.m 置 AMETHYST_METAL=1 的分支）。
+        // 刻意追加在表末：已有 profile / 全局偏好里存的 renderer 值（libxxx.dylib）
+        // 在 pick 控件里按下标配对，插到中间会让这些已存值显示错位。
+        @{@"key": @ RENDERER_NAME_METAL,
+          @"name": localize(@"preference.title.renderer.debug.metal", nil),
+          @"file": @ RENDERER_NAME_METAL},
+        // ★ [RENDERER-GAP] 队友仓库（Gsjsjzhznsz/Air-Minecraft-iOS-Launcher）有而我们
+        // 没有的渲染器入口。全部追加在表末：既有的 profile/全局偏好里存的渲染器值
+        // （libxxx.dylib）在 pick 控件里按下标配对，追加在末尾不会让任何既有下标错位。
+        // 这些 dylib 未随包（由 Makefile dep_* / CMake 目标构建），
+        // availableRendererCandidates() 的存在性过滤会把它们隐藏 —— 默认界面/行为不变；
+        // 构建出对应 dylib 后设置页才会出现这些选项。
+        @{@"key": @ RENDERER_NAME_VGPU,
+          @"name": localize(@"preference.title.renderer.debug.vgpu", nil),
+          @"file": @ RENDERER_NAME_VGPU},
+        @{@"key": @ RENDERER_NAME_VIRGL,
+          @"name": localize(@"preference.title.renderer.debug.virgl", nil),
+          @"file": @ RENDERER_NAME_VIRGL},
+        // ★ [DROP-NGG4ES] 原 RENDERER_NAME_NGGL4ES 候选表项（preference.title.renderer.debug.nggl4es）
+        //   已随该支移除；其余三支（VGPU/VirGL/GL4ESZL2）原样保留。
+        @{@"key": @ RENDERER_NAME_GL4ESZL2,
+          @"name": localize(@"preference.title.renderer.debug.gl4eszl2", nil),
+          @"file": @ RENDERER_NAME_GL4ESZL2}
+    ];
+}
+
+// 当前选中的渲染器（可能已不在候选表里，见下方说明）
+static NSString *currentRendererKey(void) {
+    NSString *value = getPrefObject(@"video.renderer");
+    return [value isKindOfClass:NSString.class] ? value : nil;
+}
+
+// 过滤规则：
+//   1. dylib 不存在的候选不显示（Mithril 需另下载、MobileGL 默认不构建）
+//   2. 但当前已选中的值永远保留 —— 否则用户选了某个渲染器、之后该 dylib 被移除
+//      （例如换了个不含 MobileGL 的构建），设置页会失去这一项，pick 控件拿不到
+//      对应下标，显示为空白或错选中第一项，用户无从察觉当前到底是什么渲染器。
+static NSArray<NSDictionary *> *availableRendererCandidates(void) {
+    NSString *current = currentRendererKey();
+    NSMutableArray *result = [NSMutableArray array];
+    for (NSDictionary *entry in rendererCandidates()) {
+        NSString *file = entry[@"file"];
+        NSString *key = entry[@"key"];
+        if (file.length > 0 && !rendererLibraryExists(file) && ![key isEqualToString:current]) {
+            continue;
+        }
+        [result addObject:entry];
+    }
+    return result;
+}
+
+NSArray* getRendererKeys(BOOL containsDefault) {
+    NSMutableArray *array = [NSMutableArray array];
+    for (NSDictionary *entry in availableRendererCandidates()) {
+        [array addObject:entry[@"key"]];
+    }
     if (containsDefault) {
         [array insertObject:@"(default)" atIndex:0];
     }
-    
     return array;
 }
 
 NSArray* getRendererNames(BOOL containsDefault) {
-    NSMutableArray *array;
-
-    array = @[
-        localize(@"preference.title.renderer.debug.auto", nil),
-        localize(@"preference.title.renderer.debug.gl4es", nil),
-        localize(@"preference.title.renderer.debug.angle", nil),
-        localize(@"preference.title.renderer.debug.mg", nil),
-        localize(@"preference.title.renderer.debug.zink", nil),
-        localize(@"preference.title.renderer.debug.ltw", nil),
-        localize(@"preference.title.renderer.debug.vulkan", nil)
-    ].mutableCopy;
-
+    NSMutableArray *array = [NSMutableArray array];
+    for (NSDictionary *entry in availableRendererCandidates()) {
+        [array addObject:entry[@"name"]];
+    }
     if (containsDefault) {
         [array insertObject:@"(default)" atIndex:0];
     }
-
     return array;
 }

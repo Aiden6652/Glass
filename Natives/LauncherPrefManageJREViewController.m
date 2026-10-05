@@ -172,7 +172,10 @@ static NSString *currentImportTaskId;
 
     // redesign-download-ui Phase 4 Task 4.3：运行时导入注册为统一下载任务，
     // 单阶段 + autoPresentDetail 自动弹出统一进度页；rawTask = totalProgress 支持取消
-    NSString *runtimeName = [url.path substringToIndex:url.path.length-7].lastPathComponent;
+    NSString *pathOrUrl = url.path;
+    // ★ [DEMINE] 原为 substringToIndex:url.path.length-7：路径短于 7 字符时无符号下溢
+    //   ⇒ 越界 NSRangeException 崩 App。短则退化为用整条路径取末段。
+    NSString *runtimeName = (pathOrUrl.length >= 7 ? [pathOrUrl substringToIndex:pathOrUrl.length - 7] : pathOrUrl).lastPathComponent;
     NSString *source = getPrefObject(@"general.download_source") ?: @"official";
     DownloadTaskItem *taskItem = [[DownloadTaskManager sharedManager]
         registerTaskWithResourceType:DownloadTaskResourceTypeJavaRuntime
@@ -574,7 +577,14 @@ styleForMenuWithConfiguration:(UIContextMenuConfiguration *)configuration
         return [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
     }
 
-    content = [content componentsSeparatedByString:@"JAVA_VERSION=\""][1];
+    // ★ [DEMINE] 原为 componentsSeparatedByString:@"JAVA_VERSION=\""][1] 直接下标：
+    //   release 文件缺 JAVA_VERSION=" 行时数组只有 1 个元素 ⇒ 越界 NSRangeException 崩 App。
+    NSArray *jvParts = [content componentsSeparatedByString:@"JAVA_VERSION=\""];
+    if (jvParts.count < 2) {
+        NSLog(@"[DEMINE] javaVersionForPath: no JAVA_VERSION in release file: %@", path);
+        return @"Error: JAVA_VERSION not found";
+    }
+    content = jvParts[1];
     content = [content componentsSeparatedByString:@"\""][0];
     return content;
 }
@@ -656,6 +666,12 @@ styleForMenuWithConfiguration:(UIContextMenuConfiguration *)configuration
     for (NSString *line in [content componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
         if (line.length > 0) {
             NSArray *keyValue = [[line substringToIndex:line.length-1] componentsSeparatedByString:@"=\""];
+            // ★ [DEMINE] 原为 keyValue[1] 直接下标：release 文件里任一行不含 =" 时
+            //   (空行/注释/等号变体)数组只有 1 个元素 ⇒ 越界 NSRangeException 崩 App。缺值跳过该行。
+            if (keyValue.count < 2) {
+                NSLog(@"[DEMINE] skip malformed release line: %@", line);
+                continue;
+            }
             dict[keyValue[0]] = keyValue[1];
         }
     }

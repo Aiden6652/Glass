@@ -409,8 +409,17 @@
             if (indexInFull != NSNotFound) {
                 [weakSelf.localItems removeObjectAtIndex:indexInFull];
             }
-            [weakSelf.filteredLocalItems removeObjectAtIndex:indexPath.row];
-            [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+            // ★ [DEMINE] 原为无条件 removeObjectAtIndex:indexPath.row：弹框期间数据源若被刷新
+            //   (异步刷新/其它删除)会导致 indexPath 过期 ⇒ 越界 NSRangeException 崩 App。
+            //   越界则跳过这两步(下一次 reload 自会纠正)；正常情况索引有效，行为不变。
+            if (indexPath.row < (NSInteger)weakSelf.filteredLocalItems.count) {
+                [weakSelf.filteredLocalItems removeObjectAtIndex:indexPath.row];
+                [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+            } else {
+                NSLog(@"[DEMINE] stale delete index %ld >= filtered count %lu -- skipping removal",
+                      (long)indexPath.row, (unsigned long)weakSelf.filteredLocalItems.count);
+                [tableView reloadData];
+            }
             completionHandler(YES);
         }]];
         [weakSelf presentViewController:alert animated:YES completion:nil];

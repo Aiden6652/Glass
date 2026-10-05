@@ -11,7 +11,29 @@ endif()
 
 configure_file(${CMAKE_CURRENT_LIST_DIR}/config.h.in ${CMAKE_CURRENT_LIST_DIR}/config.h)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -target arm64-apple-ios -mcpu=apple-a8 -fcommon -fobjc-arc -ObjC -F'${CMAKE_OSX_SYSROOT}/System/Cryptexes/OS/System/Library/Frameworks'")
+# ★ 关键修正:从 CMAKE_OSX_SYSROOT 解析出 SDK 版本(如 .../iPhoneOS26.2.sdk -> 26.2),
+#   并把 -target 补成 arm64-apple-ios<min>-ios<SDK>。
+#   为什么必须这么做:原来只写 "-target arm64-apple-ios"(不带 SDK 版本),
+#   clang 会把 SDK 记成默认值 ⇒ 产物主二进制 LC_BUILD_VERSION 的 sdk 字段不是实际 SDK
+#   ⇒ 系统按 SDK 判定"该应用未用 iOS 26 SDK 构建" ⇒ 不采用 iOS 26 新外观(拿不到液态玻璃)。
+#
+#   注:iOS 的 target triple 里【不能】带 SDK 版本(clang 会报
+#   "version 'ios26.2' in target triple ... is invalid"),SDK 由 -isysroot 指向的
+#   SDK 决定。因此这里只写 minOS(ios14.0),并显式给出 -miphoneos-version-min=14.0,
+#   让 clang 把 SDK 版本如实记录为 -isysroot 所指 SDK(CI 里已锁 Xcode 26.3 / iPhoneOS26.2)。
+if(CMAKE_OSX_SYSROOT)
+  get_filename_component(AME_SDK_NAME "${CMAKE_OSX_SYSROOT}" NAME)      # iPhoneOS26.2.sdk
+  string(REGEX MATCH "iPhoneOS([0-9]+\.[0-9]+)" _m "${AME_SDK_NAME}")   # 取版本
+  if(CMAKE_MATCH_1)
+    set(AME_SDK_VERSION "${CMAKE_MATCH_1}")
+  endif()
+endif()
+if(NOT AME_SDK_VERSION)
+  set(AME_SDK_VERSION "26.2")   # 兜底(CI 已锁定 Xcode 26.3/iOS 26.2 SDK)
+endif()
+message(STATUS "★ AME_SDK_VERSION = ${AME_SDK_VERSION} (from ${CMAKE_OSX_SYSROOT})")
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -target arm64-apple-ios14.0 -miphoneos-version-min=14.0 -mcpu=apple-a8 -fcommon -fobjc-arc -ObjC -F'${CMAKE_OSX_SYSROOT}/System/Cryptexes/OS/System/Library/Frameworks'")
 set(CMAKE_C_FLAGS_DEBUG "-funwind-tables -g")
 
 if("${CMAKE_HOST_SYSTEM_NAME}" MATCHES "Linux|^GNU$|Android")
@@ -35,44 +57,40 @@ include_directories(
   "external/ballpa1n"
   "external/ballpa1n/wrapped"
   "external/mach"
-  # "external/ZeroTierFramework/ios-example-app/zt.framework/Headers"  # ZeroTier 暂时移除
+  # ★ [MP-RESTORE] ZeroTier framework headers (联机恢复)
+  "external/ZeroTierFramework/ios-example-app/zt.framework/Headers"
 )
 
 # ============================================================================
-# ZeroTier Apple Framework 集成 —— 暂时移除（注释掉以排查启动崩溃）
+# ZeroTier Apple Framework 集成 —— ★ [MP-RESTORE] 恢复联机
 # ============================================================================
-# set(ZT_FRAMEWORK_DIR "${CMAKE_CURRENT_LIST_DIR}/external/ZeroTierFramework/ios-example-app")
-# set(ZT_FRAMEWORK_LIB "${ZT_FRAMEWORK_DIR}/zt.framework/zt")
-# if(EXISTS "${ZT_FRAMEWORK_LIB}")
-#   message(STATUS "Found ZeroTier framework binary: ${ZT_FRAMEWORK_LIB}")
-#   set(ZT_FRAMEWORK_SEARCH_PATH "-F'${ZT_FRAMEWORK_DIR}'")
-#   set(ZT_FRAMEWORK_LINK "-framework zt")
-#   set(ZT_CXX_LIB "-lc++")
-# else()
-#   message(FATAL_ERROR "ZeroTier framework not found at ${ZT_FRAMEWORK_LIB}. Please run: git submodule update --init --recursive")
-# endif()
-set(ZT_FRAMEWORK_SEARCH_PATH "")
-set(ZT_FRAMEWORK_LINK "")
-set(ZT_CXX_LIB "")
+set(ZT_FRAMEWORK_DIR "${CMAKE_CURRENT_LIST_DIR}/external/ZeroTierFramework/ios-example-app")
+set(ZT_FRAMEWORK_LIB "${ZT_FRAMEWORK_DIR}/zt.framework/zt")
+if(EXISTS "${ZT_FRAMEWORK_LIB}")
+  message(STATUS "Found ZeroTier framework binary: ${ZT_FRAMEWORK_LIB}")
+  set(ZT_FRAMEWORK_SEARCH_PATH "-F'${ZT_FRAMEWORK_DIR}'")
+  set(ZT_FRAMEWORK_LINK "-framework zt")
+  set(ZT_CXX_LIB "-lc++")
+else()
+  message(FATAL_ERROR "ZeroTier framework not found at ${ZT_FRAMEWORK_LIB}. Please run: git submodule update --init --recursive")
+endif()
 
 # ============================================================================
-# libterracotta.xcframework 集成（陶瓦联机）—— 暂时移除（注释掉以排查启动崩溃）
+# libterracotta.xcframework 集成（陶瓦联机）—— ★ [MP-RESTORE] 恢复联机
 # ============================================================================
-# set(TERRACOTTA_LIB_DIR "${CMAKE_CURRENT_LIST_DIR}/terracotta")
-# set(TERRACOTTA_XCFW "${TERRACOTTA_LIB_DIR}/libterracotta.xcframework")
-# set(TERRACOTTA_LIB "")
-# set(TERRACOTTA_AVAILABLE OFF)
-# if(EXISTS "${TERRACOTTA_XCFW}/ios-arm64/libterracotta.a")
-#   set(_TC_LIB_PATH "${TERRACOTTA_XCFW}/ios-arm64/libterracotta.a")
-#   set(TERRACOTTA_LIB "-Wl,-force_load,${_TC_LIB_PATH}")
-#   set(TERRACOTTA_AVAILABLE ON)
-# elseif(EXISTS "${TERRACOTTA_LIB_DIR}/libterracotta.a")
-#   set(_TC_LIB_PATH "${TERRACOTTA_LIB_DIR}/libterracotta.a")
-#   set(TERRACOTTA_LIB "-Wl,-force_load,${_TC_LIB_PATH}")
-#   set(TERRACOTTA_AVAILABLE ON)
-# endif()
+set(TERRACOTTA_LIB_DIR "${CMAKE_CURRENT_LIST_DIR}/terracotta")
+set(TERRACOTTA_XCFW "${TERRACOTTA_LIB_DIR}/libterracotta.xcframework")
 set(TERRACOTTA_LIB "")
 set(TERRACOTTA_AVAILABLE OFF)
+if(EXISTS "${TERRACOTTA_XCFW}/ios-arm64/libterracotta.a")
+  set(_TC_LIB_PATH "${TERRACOTTA_XCFW}/ios-arm64/libterracotta.a")
+  set(TERRACOTTA_LIB "-Wl,-force_load,${_TC_LIB_PATH}")
+  set(TERRACOTTA_AVAILABLE ON)
+elseif(EXISTS "${TERRACOTTA_LIB_DIR}/libterracotta.a")
+  set(_TC_LIB_PATH "${TERRACOTTA_LIB_DIR}/libterracotta.a")
+  set(TERRACOTTA_LIB "-Wl,-force_load,${_TC_LIB_PATH}")
+  set(TERRACOTTA_AVAILABLE ON)
+endif()
 
 # For cacio support library
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -rpath @loader_path -rpath @executable_path/java_runtimes/java-8-openjdk/lib -rpath /usr/lib/jvm/java-8-openjdk/lib")
@@ -264,15 +282,122 @@ target_link_libraries(audio_capture
   "-framework AVFoundation"
 )
 
+# ============================================================================
+# ★ [SWIFT-BAR] SwiftUI 底部标签栏(Natives/AmeTabBar.swift)编译规则
+# ----------------------------------------------------------------------------
+#  为什么必须单开一条 swiftc 规则:本工程的 C/OBJC 都用 clang(CMake 的 C 编译器),
+#  **clang 编不了 Swift**;而工程是纯 CMake(没有 Xcode 工程文件)⇒ 用
+#  add_custom_command 调 swiftc 产出 AmeTabBar.o,再把该 .o 当外部对象加进
+#  add_executable(Glass) ...) 的源列表(只追加,不动既有 OBJC 顺序)。
+#
+#  target triple 按平台自动判定(设备 / 模拟器),与 C 侧 minOS 一致(ios14.0):
+#    设备:   arm64-apple-ios14.0             (SDK = .../iPhoneOS*.sdk)
+#    模拟器: <arch>-apple-ios14.0-simulator  (SDK = .../iPhoneSimulator*.sdk)
+#
+#  链接:Swift 运行时在 SDK 的 usr/lib/swift(SDK 里有 libswiftCore.tbd 等),
+#  设备 iOS 12.2+ 的系统里也自带 /usr/lib/swift ⇒
+#    ① 不用打包任何 Swift dylib;② 不改 CFBundle;③ 只是给链接器 -L + rpath。
+#  若链接真报缺 libswift*,再按需补 -lswiftCore -lswiftFoundation -lswiftUIKit
+#  -lswiftSwiftUI(见 _uibuild/SWIFT_BAR_REPORT.md「链接参数怎么定的」)。
+# ============================================================================
+
+set(AME_TABBAR_SWIFT_SRC "${CMAKE_CURRENT_LIST_DIR}/AmeTabBar.swift")
+
+# 架构:C 侧统一走 CMAKE_OSX_ARCHITECTURES(Makefile 传 arm64);缺省退回宿主架构
+set(AME_SWIFT_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+if(NOT AME_SWIFT_ARCH)
+  set(AME_SWIFT_ARCH "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+endif()
+
+# 设备 / 模拟器:看 -isysroot 指向的 SDK 路径里有没有 Simulator
+set(AME_SWIFT_TRIPLE "${AME_SWIFT_ARCH}-apple-ios14.0")
+if("${CMAKE_OSX_SYSROOT}" MATCHES "[Ss]imulator")
+  set(AME_SWIFT_TRIPLE "${AME_SWIFT_ARCH}-apple-ios14.0-simulator")
+endif()
+
+# Swift 运行时目录(SDK 内)
+set(AME_SWIFT_LIBDIR "${CMAKE_OSX_SYSROOT}/usr/lib/swift")
+# ★ [SWIFT-BAR] 回退兼容库(swiftCompatibility56/Concurrency/Packs)不在 SDK 里,
+#   只在【Xcode 工具链】的 usr/lib/swift/iphoneos 下 ⇒ 必须再给链接器一条 -L。
+get_filename_component(AME_XCODE_DEVDIR "${CMAKE_OSX_SYSROOT}/../../../../.." ABSOLUTE)
+set(AME_SWIFT_TOOLCHAIN_LIBDIR "${AME_XCODE_DEVDIR}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos")
+if(NOT EXISTS "${AME_SWIFT_TOOLCHAIN_LIBDIR}")
+  set(AME_SWIFT_TOOLCHAIN_LIBDIR "${AME_XCODE_DEVDIR}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift")
+endif()
+message(STATUS "★ [SWIFT-BAR] toolchain swift libdir = ${AME_SWIFT_TOOLCHAIN_LIBDIR}")
+
+# Release 加 -O(与 C 侧 CMAKE_BUILD_TYPE 对齐)
+set(AME_SWIFT_OPT_FLAGS "")
+if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
+  set(AME_SWIFT_OPT_FLAGS "-O")
+endif()
+
+# swiftc:先找 PATH,再退回 xcrun(CI/无 PATH 的环境)
+find_program(AME_SWIFTC NAMES swiftc)
+if(NOT AME_SWIFTC)
+  execute_process(COMMAND xcrun -f swiftc
+                  OUTPUT_VARIABLE _ame_swiftc_hint
+                  OUTPUT_STRIP_TRAILING_WHITESPACE
+                  RESULT_VARIABLE _ame_swiftc_rc)
+  if(_ame_swiftc_rc EQUAL 0)
+    set(AME_SWIFTC "${_ame_swiftc_hint}")
+  endif()
+endif()
+
+# 若 Makefile 的 `swift` 目标已经先编好 .o 并 -DAME_TABBAR_OBJ 传进来,就直接复用
+if(AME_TABBAR_OBJ AND EXISTS "${AME_TABBAR_OBJ}")
+  set(AME_TABBAR_NEEDS_BUILD FALSE)
+else()
+  set(AME_TABBAR_OBJ "${CMAKE_CURRENT_BINARY_DIR}/AmeTabBar.o")
+  set(AME_TABBAR_NEEDS_BUILD TRUE)
+endif()
+
+# Swift 现在是底栏的唯一实现(LauncherMenuViewController.m 直接引用 AmeTabBarHost),
+# 编不出来就会在链接期报 undefined symbol ⇒ 这里直接给出可读的失败原因。
+if(AME_TABBAR_NEEDS_BUILD AND NOT AME_SWIFTC)
+  message(FATAL_ERROR "★ [SWIFT-BAR] 找不到 swiftc。AmeTabBar.swift(底栏)必须用 Swift 编译;"
+                      "请安装 Xcode / Command Line Tools,或确认 `xcrun -f swiftc` 可用。")
+endif()
+
+if(AME_TABBAR_NEEDS_BUILD)
+  add_custom_command(
+    OUTPUT  "${AME_TABBAR_OBJ}"
+    COMMAND "${AME_SWIFTC}" -parse-as-library -emit-object
+            -target "${AME_SWIFT_TRIPLE}"
+            -sdk "${CMAKE_OSX_SYSROOT}"
+            ${AME_SWIFT_OPT_FLAGS}
+            -o "${AME_TABBAR_OBJ}"
+            "${AME_TABBAR_SWIFT_SRC}"
+    DEPENDS "${AME_TABBAR_SWIFT_SRC}"
+    COMMENT "★ [SWIFT-BAR] swiftc ${AME_SWIFT_TRIPLE} -sdk ${CMAKE_OSX_SYSROOT} -> AmeTabBar.o"
+    VERBATIM)
+  add_custom_target(AmeTabBarSwift DEPENDS "${AME_TABBAR_OBJ}")
+endif()
+
+# 外部对象:CMake 只把它放进链接行,不去「编译」它
+set_source_files_properties("${AME_TABBAR_OBJ}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+message(STATUS "★ [SWIFT-BAR] swiftc=${AME_SWIFTC} triple=${AME_SWIFT_TRIPLE} obj=${AME_TABBAR_OBJ} swiftlib=${AME_SWIFT_LIBDIR} build=${AME_TABBAR_NEEDS_BUILD}")
+
 # Angel Aura Amethyst
-add_executable(Glass
+add_executable(Glass)
   dyld_bypass_validation.m
   dyld_patch_platform.m
   main.m
   main_hook.m
+  # ★ [LINK511] 换底 5.1.0 时漏掉的 fork 独有源(上游 5.1.0 的 add_executable 里有):
+  #   sdl3_hook.m 定义 ame_hook_getEmbeddedSDLView / ame_sdlVulkanWindowActive /
+  #   amethyst_sdl3_hook_resolve(分别被 gl_bridge.m / egl_bridge.m / main_hook.m 引用);
+  #   shaderc_include.c 为 Task 47 RenderPearl `#include <minecraft:...>` 展开器(上游 exe 列表成员)。
+  sdl3_hook.m
+  shaderc_include.c
+  # ★ [SHADER-CAP] Metal 光影能力：GL 入口运行时探测 + 诚实扩展上报 + core→EXT 别名映射
+  #   (只追加；被 sdl3_hook.m 引用，纯 C 编译为 ObjC 仅为用 NSLog)
+  shader_cap_probe.m
   JavaLauncher.m
   external/fishhook/fishhook.c
   UIKit+hook.m
+  UIViewController+AMEPanel.m   # 子面板原生基底样式(移植自 Gsjsjzhznsz 的 Air fork)
+  NMToast.m                    # 应用内通知(移植自 Gsjsjzhznsz 的 Air fork)
   ScreenUtils.m
 
   authenticator/BaseAuthenticator.m
@@ -283,6 +408,9 @@ add_executable(Glass
   ctxbridges/gl_bridge.m
   ctxbridges/osm_bridge.m
   ctxbridges/vk_bridge.m
+  # ★ [RENDERER-GAP] 新增渲染器运行时桥（纯追加）：gl4es 家族引导 + VirGL vtest 服务端。
+  ctxbridges/gl4es_family_boot.m
+  ctxbridges/virgl_server.m
 
   customcontrols/ControlButton.m
   customcontrols/ControlDrawer.m
@@ -338,13 +466,13 @@ add_executable(Glass
   FileListViewController.m
   GameSurfaceView.m
   JavaGUIViewController.m
-  # ZeroTier 联机暂时移除（排查启动崩溃）
-  # MultiplayerManager.m
-  # MultiplayerViewController.m
-  # LanPortDetector.m
-  # ZeroTierBridge.m
-  # SOCKS5Proxy.m
-  # PortForwarder.m
+  # ★ [MP-RESTORE] ZeroTier 联机恢复
+  MultiplayerManager.m
+  MultiplayerViewController.m
+  LanPortDetector.m
+  ZeroTierBridge.m
+  SOCKS5Proxy.m
+  PortForwarder.m
   LauncherMenuViewController.m
   LauncherNavigationController.m
   LauncherNewsViewController.m
@@ -357,6 +485,7 @@ add_executable(Glass
   DownloadViewController.m
   LauncherPreferences.m
   LauncherPreferencesViewController.m
+  LauncherLanguageViewController.m   # ★ [LANG-SWITCH] 语言选择子页(跟随系统 + 枚举 .lproj)
   LauncherPrefContCfgViewController.m
   LauncherPrefGameDirViewController.m
   LauncherPrefManageJREViewController.m
@@ -383,6 +512,8 @@ add_executable(Glass
   input_bridge_v3.m
   ios_uikit_bridge.m
   utils.m
+  # ★ [LAUNCH-PROGRESS] 启动阶段上报 API(供 JavaLauncher / SurfaceViewController 调用)
+  AmeLaunchProgress.m
 
   # Version card cell (used by DownloadViewController)
   VersionCardCell.m
@@ -461,15 +592,6 @@ add_executable(Glass
   # Account custom avatar management sources
   AvatarManager.m
 
-  # Minecraft skin cache（启动时联网刷新皮肤并落盘，离线回退本地缓存）
-  SkinCacheManager.m
-
-  # Glass 主题：统一配色 / 圆角 / 描边 / 动效参数（主界面 + AI 界面共用）
-  GlassTheme.m
-
-  # Glass 液态玻璃渲染组件：多层模糊 + 背景折射 + 镜面高光 + 菲涅尔描边（iOS 14+ 复刻 UIGlassEffect）
-  GlassEffectView.m
-
   # Background wallpaper sources
   BackgroundManager.m
   BackgroundSettingsViewController.m
@@ -480,14 +602,16 @@ add_executable(Glass
   TouchControllerBridge.m
   TouchControllerPreferencesViewController.m
 
-  # Terracotta multiplayer（陶瓦联机）—— 暂时移除（排查启动崩溃）
-  # TerracottaBridge.m
-  # TerracottaManager.m
-  # SilentAudioPlayer.m
-  # TerracottaViewController.m
+  # ★ [MP-RESTORE] Terracotta multiplayer（陶瓦联机）
+  TerracottaBridge.m
+  TerracottaManager.m
+  SilentAudioPlayer.m
+  TerracottaViewController.m
 
   # Update checker（参考 FCL/ZL2，使用 GitHub Releases API 检查正式版更新）
   UpdateChecker.m
+  # ★ [LINK511] 换底 5.1.0 时漏掉(定义 UpdateDialogViewController,被 UpdateChecker.m 引用)
+  UpdateDialogViewController.m
 
   # Minecraft 新闻（参考 PCL-CE，调用 minecraft-services.net 官方新闻 API）
   MinecraftNewsItem.m
@@ -537,21 +661,29 @@ add_executable(Glass
   AI/AiDownloadProbe.m
   AI/AiInstanceCreator.m
 
-  # Air AI Agent 3c：通用联网浏览工具（fetch_url）
+  # ★ [GLASS] 通用联网 / GitHub 推送 / 目录授权 / 源码树浏览 / 自省工具
   AI/AiWebFetchTool.m
-
-  # Air AI Agent 3d：GitHub 代码推送工具（github_set_token / github_push）
   AI/AiGitHubTools.m
-
-  # Air AI Agent 3e：容器外目录授权工具（folder_request_access / list / revoke）
   AI/AiFolderAccessTool.m
-
-  # Air AI Agent 3e：GitHub 仓库源码浏览工具（github_tree / github_read_files / github_search_code）
   AI/AiGitHubTreeTool.m
-
-  # Air AI Agent 自省工具（list_tools：让 AI 查询当前已注册工具，便于自我纠正与排查）
   AI/AiListToolsTool.m
+
+  # ★ [GLASS] 液态玻璃渲染层 + 主题常量 + 皮肤缓存
+  GlassLiquidEffect.m
+  GlassEffectView.m
+  GlassTheme.m
+  SkinCacheManager.m
+
+  # ★ [SWIFT-BAR] SwiftUI 底部标签栏目标文件(swiftc 产出;只追加,不动上面既有 OBJC 顺序)
+  ${AME_TABBAR_OBJ}
+  # ★ [ROOTTAB] 根标签栏控制器(真正的 UITabBarController;音乐/LiveContainer 同构)
+  AmeRootTabController.m
 )
+
+# ★ [SWIFT-BAR] 保证 AmeTabBar.o 先于链接生成(独立 cmake 构建时走这条)
+if(AME_TABBAR_NEEDS_BUILD)
+  add_dependencies(Glass AmeTabBarSwift)
+endif()
 
 # Add ModLoaderIcons PNG files into the app bundle Resources/ModLoaderIcons so they are available at runtime.
 # This will copy all *.png under Natives/ModLoaderIcons into the bundle at Resources/ModLoaderIcons/<name>.png
@@ -581,7 +713,10 @@ target_link_libraries(Glass
   lzma
   "-F'${CMAKE_CURRENT_LIST_DIR}/build'"
   "-F'${CMAKE_CURRENT_LIST_DIR}/resources/Frameworks'"
-  # ZeroTier 暂时移除："${ZT_FRAMEWORK_SEARCH_PATH}" "${ZT_FRAMEWORK_LINK}" "${ZT_CXX_LIB}"
+  # ★ [MP-RESTORE] ZeroTier 链接
+  "${ZT_FRAMEWORK_SEARCH_PATH}"
+  "${ZT_FRAMEWORK_LINK}"
+  "${ZT_CXX_LIB}"
   "-framework AltKit"
   "-framework AuthenticationServices"
   "-framework AVFoundation"
@@ -600,10 +735,136 @@ target_link_libraries(Glass
   "-framework UnzipKit"
   "-framework WebKit"
   "-weak_framework SafariServices"
+  # ★ [SWIFT-BAR] Swift 运行时:iOS 12.2+ 设备自带 /usr/lib/swift,SDK 里也有 .tbd
+  #   ⇒ 只给链接器搜索路径 + rpath,不打包任何 Swift dylib、不改 CFBundle。
+  "-L${AME_SWIFT_LIBDIR}"
+  # ★ [SWIFT-BAR] 工具链里的回退兼容库(缺这条就报 Undefined _swift_FORCE_LOAD_$_swiftCompatibility56)
+  "-L${AME_SWIFT_TOOLCHAIN_LIBDIR}"
+  "-Wl,-rpath,/usr/lib/swift"
   ${TOUCHCONTROLLER_LIB}
-  # Terracotta multiplayer 暂时移除：${TERRACOTTA_LIB} "-lc++" "-lresolv"
+  # ★ [MP-RESTORE] Terracotta multiplayer —— libterracotta 是 Rust 静态库，需要 libc++/resolv
+  ${TERRACOTTA_LIB}
+  "-lc++"
+  "-lresolv"
 )
 set_target_properties(Glass PROPERTIES
   MACOSX_BUNDLE TRUE
   MACOSX_FRAMEWORK_IDENTIFIER org.cmake.ExecutableTarget
   MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/Info.plist")
+
+# ============================================================================
+# ★ [RENDERER-GAP] VGPU 渲染器（PojavLauncherTeam/VGPU，gl4es 分支）——可选目标。
+#   来源：Gsjsjzhznsz/Air-Minecraft-iOS-Launcher 的 Natives/CMakeLists.txt（Task173）。
+#   源码已 vendored 于 external/vgpu（含 Task173 的 iOS 移植补丁：pack/load.c 库名
+#   指向 libGLESv2.framework、glx.c/printf_def.h 去 android/log.h）。
+#   构建口径与 Android.mk 一致：-DNOX11 -DNO_GBM -DNOEGL -DDEFAULT_ES=3 -DSHAREDLIB。
+#   双重 basename（pack/shader.c vs gl/shader.c）拆两个 OBJECT 库再链接，避免 .o 撞名。
+#
+#   默认【关闭】——不改变默认构建/现有渲染器。开启方式（任选其一）：
+#     cmake -DAME_RENDERER_GAP_VGPU=ON ...      （native 目标透传见 Makefile RENDERER_GAP_EXTRAS）
+#   产出 libvgpu.dylib，由 payload 的 "cp $(WORKINGDIR)/*.dylib" 自动带进 Frameworks。
+# ============================================================================
+option(AME_RENDERER_GAP_VGPU "Build the imported VGPU (gl4es fork) renderer dylib" OFF)
+if(AME_RENDERER_GAP_VGPU)
+  set(VGPU_DIR "${CMAKE_CURRENT_LIST_DIR}/external/vgpu")
+  set(VGPU_PACK_SRC
+    "${VGPU_DIR}/src/gl/pack/pack.c"
+    "${VGPU_DIR}/src/gl/pack/load.c"
+    "${VGPU_DIR}/src/gl/pack/Initialization.c"
+    "${VGPU_DIR}/src/gl/pack/shaderconv.c"
+    "${VGPU_DIR}/src/gl/pack/shader.c"
+  )
+  set(VGPU_CORE_SRC
+    "${VGPU_DIR}/src/glx/hardext.c"
+    "${VGPU_DIR}/src/glx/glx.c"
+    "${VGPU_DIR}/src/glx/lookup.c"
+    "${VGPU_DIR}/src/glx/gbm.c"
+    "${VGPU_DIR}/src/glx/streaming.c"
+    "${VGPU_DIR}/src/gl/arbconverter.c"
+    "${VGPU_DIR}/src/gl/arbgenerator.c"
+    "${VGPU_DIR}/src/gl/arbhelper.c"
+    "${VGPU_DIR}/src/gl/arbparser.c"
+    "${VGPU_DIR}/src/gl/array.c"
+    "${VGPU_DIR}/src/gl/blend.c"
+    "${VGPU_DIR}/src/gl/blit.c"
+    "${VGPU_DIR}/src/gl/buffers.c"
+    "${VGPU_DIR}/src/gl/build_info.c"
+    "${VGPU_DIR}/src/gl/debug.c"
+    "${VGPU_DIR}/src/gl/decompress.c"
+    "${VGPU_DIR}/src/gl/depth.c"
+    "${VGPU_DIR}/src/gl/directstate.c"
+    "${VGPU_DIR}/src/gl/drawing.c"
+    "${VGPU_DIR}/src/gl/enable.c"
+    "${VGPU_DIR}/src/gl/envvars.c"
+    "${VGPU_DIR}/src/gl/eval.c"
+    "${VGPU_DIR}/src/gl/face.c"
+    "${VGPU_DIR}/src/gl/fog.c"
+    "${VGPU_DIR}/src/gl/fpe.c"
+    "${VGPU_DIR}/src/gl/fpe_cache.c"
+    "${VGPU_DIR}/src/gl/fpe_shader.c"
+    "${VGPU_DIR}/src/gl/framebuffers.c"
+    "${VGPU_DIR}/src/gl/gl_lookup.c"
+    "${VGPU_DIR}/src/gl/getter.c"
+    "${VGPU_DIR}/src/gl/gl4es.c"
+    "${VGPU_DIR}/src/gl/glstate.c"
+    "${VGPU_DIR}/src/gl/hint.c"
+    "${VGPU_DIR}/src/gl/init.c"
+    "${VGPU_DIR}/src/gl/light.c"
+    "${VGPU_DIR}/src/gl/line.c"
+    "${VGPU_DIR}/src/gl/list.c"
+    "${VGPU_DIR}/src/gl/listdraw.c"
+    "${VGPU_DIR}/src/gl/listrl.c"
+    "${VGPU_DIR}/src/gl/loader.c"
+    "${VGPU_DIR}/src/gl/logs.c"
+    "${VGPU_DIR}/src/gl/matrix.c"
+    "${VGPU_DIR}/src/gl/oldprogram.c"
+    "${VGPU_DIR}/src/gl/pixel.c"
+    "${VGPU_DIR}/src/gl/planes.c"
+    "${VGPU_DIR}/src/gl/pointsprite.c"
+    "${VGPU_DIR}/src/gl/preproc.c"
+    "${VGPU_DIR}/src/gl/program.c"
+    "${VGPU_DIR}/src/gl/queries.c"
+    "${VGPU_DIR}/src/gl/raster.c"
+    "${VGPU_DIR}/src/gl/render.c"
+    "${VGPU_DIR}/src/gl/shader.c"
+    "${VGPU_DIR}/src/gl/shaderconv.c"
+    "${VGPU_DIR}/src/gl/shader_hacks.c"
+    "${VGPU_DIR}/src/gl/stack.c"
+    "${VGPU_DIR}/src/gl/stencil.c"
+    "${VGPU_DIR}/src/gl/string_utils.c"
+    "${VGPU_DIR}/src/gl/stubs.c"
+    "${VGPU_DIR}/src/gl/texenv.c"
+    "${VGPU_DIR}/src/gl/texgen.c"
+    "${VGPU_DIR}/src/gl/texture.c"
+    "${VGPU_DIR}/src/gl/texture_compressed.c"
+    "${VGPU_DIR}/src/gl/texture_params.c"
+    "${VGPU_DIR}/src/gl/texture_read.c"
+    "${VGPU_DIR}/src/gl/texture_3d.c"
+    "${VGPU_DIR}/src/gl/uniform.c"
+    "${VGPU_DIR}/src/gl/vertexattrib.c"
+    "${VGPU_DIR}/src/gl/wrap/gl4eswraps.c"
+    "${VGPU_DIR}/src/gl/wrap/vgpu_darwin_aliases.c"
+    "${VGPU_DIR}/src/gl/wrap/gles.c"
+    "${VGPU_DIR}/src/gl/wrap/glstub.c"
+    "${VGPU_DIR}/src/gl/math/matheval.c"
+    "${VGPU_DIR}/src/gl/matvec.c"
+  )
+  add_library(vgpu_pack OBJECT ${VGPU_PACK_SRC})
+  add_library(vgpu_core OBJECT ${VGPU_CORE_SRC})
+  foreach(ame173_vgpu_tgt vgpu_pack vgpu_core)
+    target_include_directories(${ame173_vgpu_tgt} PRIVATE "${VGPU_DIR}/include")
+    target_compile_definitions(${ame173_vgpu_tgt} PRIVATE
+      NOX11 NO_GBM NOEGL DEFAULT_ES=3 SHAREDLIB)
+    target_link_libraries(${ame173_vgpu_tgt} "${GLOBAL_LDFLAGS}")
+  endforeach()
+  add_library(vgpu SHARED
+    $<TARGET_OBJECTS:vgpu_pack>
+    $<TARGET_OBJECTS:vgpu_core>
+  )
+  target_link_libraries(vgpu
+    "${GLOBAL_LDFLAGS}"
+    "-F'${CMAKE_CURRENT_LIST_DIR}/resources/Frameworks'"
+    "-framework libEGL"
+    "-framework libGLESv2"
+  )
+endif()

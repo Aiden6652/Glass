@@ -19,7 +19,8 @@ static const CGFloat kPLTaskProgressPadCardHeight = 640.0;
 /// 本地化辅助：strings 暂无条目时回退代码内中文默认值
 /// （Phase 7 统一补全语言文件后 NSLocalizedString 命中，兜底自动失效）
 static NSString *PLTaskProgressText(NSString *key, NSString *fallback) {
-    NSString *value = NSLocalizedString(key, @"");
+    // ★ [I18N-ORDER] 统一入口 localize()(不再绕过语言解析)
+    NSString *value = localize(key, @"");
     return [value isEqualToString:key] ? fallback : value;
 }
 
@@ -95,6 +96,7 @@ static NSString *PLFormatDuration(NSTimeInterval seconds) {
     if (self) {
         self.backgroundColor = [UIColor tertiarySystemFillColor];
         self.layer.cornerRadius = 2.0;
+        self.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
         self.layer.masksToBounds = YES;
     }
     return self;
@@ -189,6 +191,7 @@ static NSString *PLFormatDuration(NSTimeInterval seconds) {
     self.runningBadgeLabel.textColor = [UIColor whiteColor];
     self.runningBadgeLabel.backgroundColor = accentColor();
     self.runningBadgeLabel.layer.cornerRadius = 4.0;
+    self.runningBadgeLabel.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.runningBadgeLabel.layer.masksToBounds = YES;
     self.runningBadgeLabel.textAlignment = NSTextAlignmentCenter;
     self.runningBadgeLabel.text = PLTaskProgressText(@"taskProgress.stage.running", localize(@"i18n_str_1265", nil));
@@ -474,8 +477,11 @@ static __weak PLTaskProgressViewController *PLTaskProgressActiveInstance = nil;
 - (void)viewDidLoad {
     [super viewDidLoad];
     // 适配自定义启动器背景（与下载中心一致）
-    [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
+    // ★ [PAGE-GLASS] 顺序修正：透明化必须【最后】执行 —— 原先先透明化、紧接着又写
+    //   systemBackgroundColor(不透明)，等于把透明底当场盖掉 ⇒ iOS≥26 拿不到系统液态玻璃、
+    //   壁纸也透不出（本页观感与「下载中心 / 设置页」不一致）。与其余子页保持同序。
     self.view.backgroundColor = [UIColor systemBackgroundColor];
+    [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
 
     // iPad：FormSheet 居中卡片（约 560pt 宽，内容超高内部滚动）；iPhone：PageSheet 近全屏
     if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
@@ -600,6 +606,7 @@ static __weak PLTaskProgressViewController *PLTaskProgressActiveInstance = nil;
     self.errorDetailContainer = [[UIView alloc] init];
     self.errorDetailContainer.backgroundColor = [UIColor secondarySystemBackgroundColor];
     self.errorDetailContainer.layer.cornerRadius = 12.0;
+    self.errorDetailContainer.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.errorDetailContainer.layer.masksToBounds = YES;
     self.errorDetailContainer.hidden = YES;
     [self.contentStack addArrangedSubview:self.errorDetailContainer];
@@ -640,6 +647,7 @@ static __weak PLTaskProgressViewController *PLTaskProgressActiveInstance = nil;
     totalCard.translatesAutoresizingMaskIntoConstraints = NO;
     totalCard.backgroundColor = [UIColor secondarySystemBackgroundColor];
     totalCard.layer.cornerRadius = 12.0;
+    totalCard.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     totalCard.layer.masksToBounds = YES;
     [self.footerView addSubview:totalCard];
 
@@ -754,6 +762,7 @@ static __weak PLTaskProgressViewController *PLTaskProgressActiveInstance = nil;
     button.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     button.contentEdgeInsets = UIEdgeInsetsMake(8, 14, 8, 14);
     button.layer.cornerRadius = 10.0;
+    button.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     button.layer.masksToBounds = YES;
     [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     return button;

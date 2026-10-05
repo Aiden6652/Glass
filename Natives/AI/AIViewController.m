@@ -13,8 +13,8 @@
 #import "BackgroundManager.h"
 #import "LauncherPreferences.h"
 #import "AISessionListViewController.h"
+#import "utils.h"   // ★ [HOST-BUG-A] 统一取词 localize()
 #import "AIProviderConfigViewController.h"
-#import "GlassTheme.h"
 
 /// 流式 UI 刷新节流阈值，避免 Markdown 反复重算
 static const NSTimeInterval kUIThrottleInterval = 0.2;
@@ -33,8 +33,6 @@ static const NSTimeInterval kUIThrottleInterval = 0.2;
 @property (nonatomic, strong) UILabel *emptyTitle;
 @property (nonatomic, strong) UILabel *emptySubtitle;
 @property (nonatomic, strong) UIButton *configureButton;
-/// Glass 进场动效只跑一次
-@property (nonatomic, assign) BOOL hasPlayedGlassEntrance;
 @end
 
 @implementation AIViewController
@@ -58,11 +56,15 @@ static const NSTimeInterval kUIThrottleInterval = 0.2;
         [[AiSessionStore sharedStore] updateSession:self.session];
     }
     if (self.session.title.length == 0) {
-        self.session.title = @"AI 助手";
+        self.session.title = localize(@"ai.assistant.title", @"AI 助手");
     }
 
-    // 玻璃主题：背景用主题容器色，内容区由外层 BackgroundManager 提供毛玻璃
-    self.view.backgroundColor = [GlassTheme containerBackgroundColor];
+    // 浅色背景（内容区整体毛玻璃由外层 BackgroundManager 提供），不加额外毛玻璃
+    self.view.backgroundColor = [[UIColor labelColor] colorWithAlphaComponent:0.04];
+    // ★ [PAGE-GLASS] 与同族三页(AISessionList / AIProviderConfig / AISystemPromptEditor)完全一致:
+    //   调色底之后再交给全局界面风格层 —— iOS≥26 系统液态玻璃、<26 系统原生材质。
+    //   原先本页是【唯一】不调用风格层的 AI 页 ⇒ 会话页背景与其余 AI 页/设置页不一致。
+    [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
 
     self.navigationItem.title = self.session.title;
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
@@ -81,57 +83,6 @@ static const NSTimeInterval kUIThrottleInterval = 0.2;
                                                object:nil];
 }
 
-#pragma mark - 进场动效
-
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    // 进入会话页滚动到底；无动画避免进场跳动。空会话不滚动。
-    if (self.session.messages.count > 0) {
-        [self scrollToBottomAnimated:NO];
-    }
-    // Glass 进场动效：输入栏从下方浮入（与主界面页面切换风格统一）
-    [self playGlassEntranceAnimation];
-}
-
-/// 输入栏自下方浮入 + 表格轻微跟随，只跑一次
-- (void)playGlassEntranceAnimation {
-    if (self.hasPlayedGlassEntrance) return;
-    self.hasPlayedGlassEntrance = YES;
-
-    // 必须 dispatch 到下一 runloop，否则此时约束尚未完成首次布局，
-    // transform 会被布局系统覆盖导致动效丢失。
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
-
-        UIView *bar = strongSelf.inputBar;
-        if (!bar) return;
-
-        CGFloat offset = 80.0;
-        bar.transform = CGAffineTransformMakeTranslation(0, offset);
-        bar.alpha = 0.0;
-        strongSelf.tableView.alpha = 0.0;
-
-        [UIView animateWithDuration:0.52
-                              delay:0.0
-             usingSpringWithDamping:0.86
-              initialSpringVelocity:0.4
-                            options:UIViewAnimationOptionCurveEaseOut
-                         animations:^{
-            bar.transform = CGAffineTransformIdentity;
-            bar.alpha = 1.0;
-        } completion:nil];
-
-        [UIView animateWithDuration:0.35
-                              delay:0.06
-                            options:UIViewAnimationOptionCurveEaseOut
-                         animations:^{
-            strongSelf.tableView.alpha = 1.0;
-        } completion:nil];
-    });
-}
-
 /// 会话消息变更通知回调：仅当通知携带的正是当前会话时才整表刷新并滚底
 - (void)handleSessionMessagesChanged:(NSNotification *)note {
     if (note.object && ![note.object isEqual:self.session]) return;
@@ -141,6 +92,14 @@ static const NSTimeInterval kUIThrottleInterval = 0.2;
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self.activityIndicator stopAnimating];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    // 进入会话页滚动到底；无动画避免进场跳动。空会话不滚动。
+    if (self.session.messages.count > 0) {
+        [self scrollToBottomAnimated:NO];
+    }
 }
 
 #pragma mark - Nav Bar
@@ -184,7 +143,7 @@ static const NSTimeInterval kUIThrottleInterval = 0.2;
 - (void)switchToSession:(AiSession *)session {
     if (!session) return;
     self.session = session;
-    NSString *title = session.title.length > 0 ? session.title : @"AI 助手";
+    NSString *title = session.title.length > 0 ? session.title : localize(@"ai.assistant.title", @"AI 助手");
     self.navigationItem.title = title;
     [self reloadAndScrollToBottom];
     [self updateEmptyState];

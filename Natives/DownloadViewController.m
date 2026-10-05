@@ -19,6 +19,7 @@
 #import "LauncherPreferences.h"
 #import "VersionCardCell.h"
 #import "MinecraftResourceDownloadTask.h"
+#import "MinecraftResourceUtils.h"
 #import "ModItem.h"
 #import "ModVersionViewController.h"
 #import "ModVersion.h"
@@ -566,6 +567,11 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
 @property (nonatomic, strong) UIView *sidebarSourceTrack;
 @property (nonatomic, strong) UIView *sidebarSourceSlider;
 
+// ★ [HIG] 侧栏下载源选择器(替代原自绘轨道+滑块+双按钮;换底漏件补回)
+@property (nonatomic, strong) UISegmentedControl *sidebarSourceSegment;
+// ★ [HIG] 当前下载源所属分类(mod/shader/…):分段控件回调里需要它来复用原有点击逻辑
+@property (nonatomic, copy) NSString *currentSourceTypeForSegment;
+
 // 侧边栏内的游戏版本选择按钮（点击弹出 ActionSheet 选择版本）
 @property (nonatomic, strong) UIButton *sidebarVersionButton;
 @property (nonatomic, strong) UILabel *sidebarVersionTitleLabel;
@@ -693,7 +699,8 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     // 初始 tab：默认 0（版本）；资源管理界面"去下载"引导跳转时会指定对应资源类型 tab
     NSInteger initialTab = MIN(MAX(self.initialTabIndex, 0), 6);
     self.tabSegment.selectedSegmentIndex = initialTab;
-    [self switchToTab:initialTab];
+    // ★ [HOST-BUG-B] 首次进入用无动效:与其它四个标签页一致(去掉下载页的进场 cross-dissolve)。
+    [self switchToTab:initialTab animated:NO];
     [self loadVersionList];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -825,6 +832,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.importModpackButton.tintColor = [UIColor whiteColor];
     self.importModpackButton.backgroundColor = [UIColor systemPurpleColor];
     self.importModpackButton.layer.cornerRadius = 10;
+    self.importModpackButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.importModpackButton.titleLabel.font = [UIFont boldSystemFontOfSize:14];
     self.importModpackButton.contentEdgeInsets = UIEdgeInsetsMake(0, 10, 0, 10);
     self.importModpackButton.imageEdgeInsets = UIEdgeInsetsMake(0, -4, 0, 4);
@@ -1077,6 +1085,10 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
 }
 
 - (void)setupSourceSwitch {
+    // ★ [HIG] 顶部这套"仿 FCL 安卓风格"胶囊切换器【已弃用】:下载源现在只在侧栏选。
+    //   原实现自绘轨道+彩色滑块+双按钮,并把选中项写死白色(浅色下不可见)。这里不建视图直接跳过。
+    //   (换底漏件补回)
+    if (NO) {
     // 仿 FCL 安卓风格：居中的圆角胶囊切换器，带彩色滑块与品牌色
     self.sourceSwitchContainer = [[UIView alloc] init];
     self.sourceSwitchContainer.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1088,6 +1100,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.sourceSwitchTrack.translatesAutoresizingMaskIntoConstraints = NO;
     self.sourceSwitchTrack.backgroundColor = [UIColor tertiarySystemFillColor];
     self.sourceSwitchTrack.layer.cornerRadius = 16;
+    self.sourceSwitchTrack.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.sourceSwitchTrack.layer.masksToBounds = YES;
     [self.sourceSwitchContainer addSubview:self.sourceSwitchTrack];
 
@@ -1096,6 +1109,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.sourceSwitchSlider.translatesAutoresizingMaskIntoConstraints = NO;
     self.sourceSwitchSlider.backgroundColor = [UIColor systemGreenColor];
     self.sourceSwitchSlider.layer.cornerRadius = 14;
+    self.sourceSwitchSlider.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     // 阴影提升层次感
     self.sourceSwitchSlider.layer.shadowColor = [UIColor blackColor].CGColor;
     self.sourceSwitchSlider.layer.shadowOpacity = 0.15;
@@ -1157,6 +1171,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     // 动态高度约束（隐藏时为 0，显示时为 36）
     self.sourceSwitchHeightConstraint = [self.sourceSwitchContainer.heightAnchor constraintEqualToConstant:0];
     self.sourceSwitchHeightConstraint.active = YES;
+    }   // ★ [HIG] 旧顶部切换器 到此为止(不建视图)
 }
 
 #pragma mark - FCL/ZL2 风格侧边筛选栏
@@ -1182,6 +1197,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     // 参照 LauncherRootViewController.m 中对 sidebarContainer 的处理方式。
     self.filterSidebarContainer.backgroundColor = [UIColor clearColor];
     self.filterSidebarContainer.layer.cornerRadius = 12;
+    self.filterSidebarContainer.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.filterSidebarContainer.layer.masksToBounds = YES;
     [[BackgroundManager sharedManager] applyEffectToView:self.filterSidebarContainer];
     self.filterSidebarContainer.hidden = YES;
@@ -1215,11 +1231,22 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     sourceTitleLabel.textColor = [UIColor secondaryLabelColor];
     [self.filterSidebarContainer addSubview:sourceTitleLabel];
 
+    // ★ [HIG] 用系统 UISegmentedControl 取代"自绘轨道+绿/橙滑块+双按钮"(最直白的安卓观感):
+    //   自动获得系统外观/材质、深浅色、Dynamic Type、无障碍语义。(换底漏件补回)
+    self.sidebarSourceSegment = [[UISegmentedControl alloc] initWithItems:@[@"Mod", @"CF"]];
+    self.sidebarSourceSegment.translatesAutoresizingMaskIntoConstraints = NO;
+    self.sidebarSourceSegment.selectedSegmentIndex = 0;
+    [self.sidebarSourceSegment addTarget:self action:@selector(sidebarSourceSegmentChanged:)
+                        forControlEvents:UIControlEventValueChanged];
+    [self.sidebarSourceContainer addSubview:self.sidebarSourceSegment];
+
+    if (NO) {   // ★ [HIG] 旧自绘控件不再创建(保留代码便于回退)
     // 下载源轨道
     self.sidebarSourceTrack = [[UIView alloc] init];
     self.sidebarSourceTrack.translatesAutoresizingMaskIntoConstraints = NO;
     self.sidebarSourceTrack.backgroundColor = [UIColor tertiarySystemFillColor];
     self.sidebarSourceTrack.layer.cornerRadius = 14;
+    self.sidebarSourceTrack.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.sidebarSourceTrack.layer.masksToBounds = YES;
     [self.sidebarSourceContainer addSubview:self.sidebarSourceTrack];
 
@@ -1228,6 +1255,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.sidebarSourceSlider.translatesAutoresizingMaskIntoConstraints = NO;
     self.sidebarSourceSlider.backgroundColor = [UIColor systemGreenColor];
     self.sidebarSourceSlider.layer.cornerRadius = 12;
+    self.sidebarSourceSlider.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.sidebarSourceSlider.layer.shadowColor = [UIColor blackColor].CGColor;
     self.sidebarSourceSlider.layer.shadowOpacity = 0.15;
     self.sidebarSourceSlider.layer.shadowOffset = CGSizeMake(0, 1);
@@ -1254,8 +1282,15 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.sidebarSliderLeftConstraint = [self.sidebarSourceSlider.leadingAnchor constraintEqualToAnchor:self.sidebarSourceTrack.leadingAnchor constant:2];
     self.sidebarSliderRightConstraint = [self.sidebarSourceSlider.trailingAnchor constraintEqualToAnchor:self.sidebarSourceTrack.trailingAnchor constant:-2];
     self.sidebarSliderRightConstraint.active = NO;
+    }   // ★ [HIG] 旧自绘轨道/滑块/按钮 到此为止
 
     [NSLayoutConstraint activateConstraints:@[
+        // ★ [HIG] 分段控件铺满侧栏来源容器
+        [self.sidebarSourceSegment.topAnchor constraintEqualToAnchor:self.sidebarSourceContainer.topAnchor],
+        [self.sidebarSourceSegment.leadingAnchor constraintEqualToAnchor:self.sidebarSourceContainer.leadingAnchor],
+        [self.sidebarSourceSegment.trailingAnchor constraintEqualToAnchor:self.sidebarSourceContainer.trailingAnchor],
+        [self.sidebarSourceSegment.bottomAnchor constraintEqualToAnchor:self.sidebarSourceContainer.bottomAnchor],
+
         // 下载源标题
         [sourceTitleLabel.topAnchor constraintEqualToAnchor:self.filterSidebarContainer.topAnchor constant:12],
         [sourceTitleLabel.leadingAnchor constraintEqualToAnchor:self.filterSidebarContainer.leadingAnchor constant:12],
@@ -1267,6 +1302,10 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
         [self.sidebarSourceContainer.trailingAnchor constraintEqualToAnchor:self.filterSidebarContainer.trailingAnchor constant:-8],
         [self.sidebarSourceContainer.heightAnchor constraintEqualToConstant:32],
 
+        // ★ [HIG] 旧自绘约束整体跳过(视图已不创建⇒激活会崩)
+    ]];
+    if (NO) {
+        [NSLayoutConstraint activateConstraints:@[
         // 轨道铺满容器
         [self.sidebarSourceTrack.topAnchor constraintEqualToAnchor:self.sidebarSourceContainer.topAnchor],
         [self.sidebarSourceTrack.leadingAnchor constraintEqualToAnchor:self.sidebarSourceContainer.leadingAnchor],
@@ -1289,7 +1328,8 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
         [self.sidebarCurseforgeButton.bottomAnchor constraintEqualToAnchor:self.sidebarSourceTrack.bottomAnchor],
         [self.sidebarCurseforgeButton.trailingAnchor constraintEqualToAnchor:self.sidebarSourceTrack.trailingAnchor],
         [self.sidebarCurseforgeButton.widthAnchor constraintEqualToAnchor:self.sidebarSourceTrack.widthAnchor multiplier:0.5]
-    ]];
+        ]];
+    }   // ★ [HIG] 旧自绘约束结束
 
     // ===== 2. 游戏版本选择按钮 =====
     self.sidebarVersionButton = [self createSidebarSelectButtonWithTitle:localize(@"i18n_str_2031", nil)
@@ -1342,6 +1382,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.sidebarResetButton.tintColor = [UIColor systemRedColor];
     self.sidebarResetButton.backgroundColor = [UIColor tertiarySystemFillColor];
     self.sidebarResetButton.layer.cornerRadius = 8;
+    self.sidebarResetButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.sidebarResetButton.imageEdgeInsets = UIEdgeInsetsMake(0, -2, 0, 2);
     self.sidebarResetButton.titleEdgeInsets = UIEdgeInsetsMake(0, 2, 0, -2);
     [self.sidebarResetButton addTarget:self action:@selector(sidebarResetButtonClicked:) forControlEvents:UIControlEventTouchUpInside];
@@ -1377,6 +1418,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     button.translatesAutoresizingMaskIntoConstraints = NO;
     button.backgroundColor = [UIColor tertiarySystemFillColor];
     button.layer.cornerRadius = 8;
+    button.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     [button addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
     button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
     button.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
@@ -1466,12 +1508,15 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
 #pragma mark - Tab Switching
 
 - (void)tabChanged:(UISegmentedControl *)sender {
-    [self switchToTab:sender.selectedSegmentIndex];
+    // 用户点标签 ⇒ 带淡入淡出
+    [self switchToTab:sender.selectedSegmentIndex animated:YES];
 }
 
-- (void)switchToTab:(NSInteger)index {
-    // 列表切换使用淡入淡出，避免生硬的瞬间 hidden 切换
-    [UIView transitionWithView:self.view duration:0.2 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
+// ★ [HOST-BUG-B] 增加 animated 形参:首次进入(在 viewDidLoad 里)必须【无动效】,
+//   与其它四个标签页(无进场动效)保持一致。原实现 viewDidLoad 也走这里 ⇒ 整页 cross-dissolve
+//   进场,用户报「打开下载页面时的动效与其他四个页面不一致」。
+- (void)switchToTab:(NSInteger)index animated:(BOOL)animated {
+    void (^applyVisibility)(void) = ^{
         self.versionFilterSegment.hidden = (index != 0);
         self.versionCollectionView.hidden = (index != 0);
         // 搜索框对所有 tab 都显示（版本 tab 用于按版本号前缀过滤本地+远程版本列表）
@@ -1484,7 +1529,13 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
         self.datapackTableView.hidden = (index != 4);
         self.modpackTableView.hidden = (index != 5);
         self.worldTableView.hidden = (index != 6);
-    } completion:nil];
+    };
+    // 列表切换使用淡入淡出，避免生硬的瞬间 hidden 切换（仅用户点击时；首次进入无动效）
+    if (animated) {
+        [UIView transitionWithView:self.view duration:0.2 options:UIViewAnimationOptionTransitionCrossDissolve animations:applyVisibility completion:nil];
+    } else {
+        applyVisibility();
+    }
 
     // 源切换仅在非版本 tab 显示；世界 tab 强制 CurseForge，无需切换
     // 注意：顶部 sourceSwitchContainer 现在已弃用（下载源已移到侧边栏），始终隐藏
@@ -1526,9 +1577,13 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.importModpackButton.hidden = !showImportButton;
     self.importModpackButtonWidthConstraint.constant = showImportButton ? 80 : 0;
 
-    [UIView animateWithDuration:0.2 animations:^{
-        [self.view layoutIfNeeded];
-    }];
+    if (animated) {
+        [UIView animateWithDuration:0.2 animations:^{
+            [self.view layoutIfNeeded];
+        }];
+    } else {
+        [self.view layoutIfNeeded];   // ★ [HOST-BUG-B] 首次进入:直接落位,不播动效
+    }
 
     if (index == 0) {
         // 版本 tab：按版本号前缀过滤版本列表
@@ -1586,6 +1641,8 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
 #pragma mark - Source Switch
 
 - (void)updateSourceSwitchButtonsForType:(NSString *)type {
+    // ★ [HIG] 记下当前分类,供侧栏分段控件回调使用
+    self.currentSourceTypeForSegment = type;
     NSString *currentSource = [PLPreferences currentDownloadSourceForType:type];
     BOOL isModrinth = [currentSource isEqualToString:@"modrinth"];
 
@@ -1606,22 +1663,30 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.modrinthSourceButton.tag = [self tagForType:type];
     self.curseforgeSourceButton.tag = [self tagForType:type];
 
-    // ===== 同步更新侧边栏的下载源选择器 =====
-    [self.sidebarModrinthButton setTitleColor:isModrinth ? [UIColor whiteColor] : [UIColor labelColor] forState:UIControlStateNormal];
-    [self.sidebarCurseforgeButton setTitleColor:isModrinth ? [UIColor labelColor] : [UIColor whiteColor] forState:UIControlStateNormal];
-
-    self.sidebarSliderLeftConstraint.active = isModrinth;
-    self.sidebarSliderRightConstraint.active = !isModrinth;
-    UIColor *sidebarSliderColor = isModrinth ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
-
-    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-        self.sidebarSourceSlider.backgroundColor = sidebarSliderColor;
-        [self.sidebarSourceTrack layoutIfNeeded];
-    } completion:nil];
+    // ★ [HIG] 侧栏改系统分段 ⇒ 只设 selectedSegmentIndex(不再有滑块动画/写死颜色)
+    self.sidebarSourceSegment.selectedSegmentIndex = isModrinth ? 0 : 1;
 
     // 记录当前类型到侧边栏按钮的 tag，用于点击事件中获取类型
     self.sidebarModrinthButton.tag = [self tagForType:type];
     self.sidebarCurseforgeButton.tag = [self tagForType:type];
+}
+
+/// ★ [HIG] 侧栏分段控件 → 复用原有下载源点击逻辑
+- (void)sidebarSourceSegmentChanged:(UISegmentedControl *)sender {
+    NSString *type = self.currentSourceTypeForSegment;
+    if (type.length == 0) {                 // 兜底:按当前 tab 推断
+        NSInteger tab = self.tabSegment.selectedSegmentIndex;
+        type = (tab == 0) ? @"mod" : (tab == 1 ? @"shader" : (tab == 2 ? @"resourcepack" : (tab == 3 ? @"datapack" : (tab == 4 ? @"modpack" : @"world"))));
+    }
+    self.currentSourceTypeForSegment = type;   // ★ 供下方以 nil sender 调用的点击方法回退取用
+    NSInteger tag = [self tagForType:type];
+    if (sender.selectedSegmentIndex == 0) {
+        self.sidebarModrinthButton.tag = tag;
+        [self sidebarModrinthClicked:self.sidebarModrinthButton];
+    } else {
+        self.sidebarCurseforgeButton.tag = tag;
+        [self sidebarCurseforgeClicked:self.sidebarCurseforgeButton];
+    }
 }
 
 - (NSInteger)tagForType:(NSString *)type {
@@ -1674,8 +1739,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     NSString *currentSource = [PLPreferences currentDownloadSourceForType:type];
     if ([currentSource isEqualToString:@"curseforge"]) return;
 
-    // API Key 未配置时在内容区显示提示（替代弹窗）
-    if (![CurseForgeAPI isAPIKeyConfigured]) {
+    // ★ [MODPACK-FIX] CurseForge 未配 key 时仍可用（baseURL 强制落 MCIM 镜像，免 key 实测 200），
+    //   切源门控改用 isSourceAvailable；只有真不可用才提示去设置页。
+    if (![CurseForgeAPI isSourceAvailable]) {
         InlineMessageView *msgView = [InlineMessageView showInViewController:self
                                                                        title:localize(@"i18n_str_171", nil)
                                                                     message:localize(@"i18n_str_172", nil)
@@ -1697,7 +1763,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
 
 /// 侧边栏 Modrinth 源按钮点击
 - (void)sidebarModrinthClicked:(UIButton *)sender {
-    NSString *type = [self typeForTag:sender.tag];
+    // ★ [HIG] 侧栏改系统分段后本方法改由 sidebarSourceSegmentChanged: 以 nil sender 调用;
+    //   此时旧自绘按钮已不创建(tag 取不到) ⇒ 回退到分段控件记下的当前分类,保证换源落到正确 tab。
+    NSString *type = (sender && sender.tag > 0) ? [self typeForTag:sender.tag] : self.currentSourceTypeForSegment;
     NSString *currentSource = [PLPreferences currentDownloadSourceForType:type];
     if ([currentSource isEqualToString:@"modrinth"]) return;
 
@@ -1708,12 +1776,13 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
 
 /// 侧边栏 CurseForge 源按钮点击
 - (void)sidebarCurseforgeClicked:(UIButton *)sender {
-    NSString *type = [self typeForTag:sender.tag];
+    // ★ [HIG] 同 sidebarModrinthClicked: —— 分段控件以 nil sender 调用时回退到当前分类。
+    NSString *type = (sender && sender.tag > 0) ? [self typeForTag:sender.tag] : self.currentSourceTypeForSegment;
     NSString *currentSource = [PLPreferences currentDownloadSourceForType:type];
     if ([currentSource isEqualToString:@"curseforge"]) return;
 
-    // API Key 未配置时提示
-    if (![CurseForgeAPI isAPIKeyConfigured]) {
+    // ★ [MODPACK-FIX] 同 curseforgeSourceButtonClicked：切源门控改用 isSourceAvailable。
+    if (![CurseForgeAPI isSourceAvailable]) {
         InlineMessageView *msgView = [InlineMessageView showInViewController:self
                                                                        title:localize(@"i18n_str_171", nil)
                                                                     message:localize(@"i18n_str_172", nil)
@@ -2302,8 +2371,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
         [self.loadingIndicator startAnimating];
     }
 
-    // 世界 tab 强制 CurseForge，但需 API Key（与实际请求一致的三层 fallback 判断）；缺失时给出明确入口提示
-    if (![CurseForgeAPI isAPIKeyConfigured]) {
+    // 世界 tab 强制 CurseForge；★ [MODPACK-FIX] 无 key 时由 baseURL 落 MCIM 镜像（免 key 实测 200），
+    // 故门控改用 isSourceAvailable；仅当真不可用才落空态并引导去设置页。
+    if (![CurseForgeAPI isSourceAvailable]) {
         [self.loadingIndicator stopAnimating];
         [self.worldTableView.refreshControl endRefreshing];
         self.isLoadingWorlds = NO;
@@ -2879,84 +2949,35 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
         return;
     }
 
-    // Glass 新特性：本体 + 加载器「一键串联安装」。
-    // 用户无需先手动下载原版，选中加载器后自动先安装对应原版，完成后再串联安装加载器。
-    // 说明：ensureVanillaInstalled: 内部已具备幂等性——
-    //   - 原版 JSON 与 client.jar 均存在时直接回调 YES 跳过下载；
-    //   - 仅 JSON 存在（上次中断）时补全下载；
-    //   - 均不存在时完整下载（进度页由 MinecraftResourceDownloadTask 自动弹出）。
-    // 因此已安装原版的用户不会有额外等待，未安装的用户则自动补装。
-    // 注：加载器 JSON 含 "inheritsFrom"，启动时 Java 端会合并父版本，故必须先保证原版就绪。
-    [self installLoader:loaderType
-              version:version
-           versionId:versionId
-        loaderVersion:loaderVersion
-     installFabricAPI:installFabricAPI
-      installOptiFine:installOptiFine];
-}
-
-/// 串联安装：先确保原版就绪，再安装指定模组加载器。
-/// 原版已安装时 ensureVanillaInstalled: 会立即回调，流程等同直接安装加载器。
-- (void)installLoader:(NSString *)loaderType
-              version:(NSDictionary *)version
-            versionId:(NSString *)versionId
-        loaderVersion:(NSString *)loaderVersion
-     installFabricAPI:(BOOL)installFabricAPI
-      installOptiFine:(BOOL)installOptiFine {
-    NSDictionary *loaderDisplayNames = @{
-        @"fabric": @"Fabric",
-        @"forge": @"Forge",
-        @"neoforge": @"NeoForge",
-        @"quilt": @"Quilt",
-        @"optifine": @"OptiFine"
-    };
-    NSString *loaderDisplayName = loaderDisplayNames[loaderType] ?: loaderType;
-
-    // 原版已就绪：跳过预装，直接进入加载器安装（保持原有零等待体验）
-    if ([self isVanillaVersionInstalled:versionId]) {
-        [self performLoaderInstall:loaderType
-                        versionId:versionId
-                    loaderVersion:loaderVersion
-                 installFabricAPI:installFabricAPI
-                  installOptiFine:installOptiFine];
+    // 用户决策（参考 ZL2 的保守策略）：安装模组加载器前检测对应原版是否已安装，
+    // 未安装时不再自动代装原版，而是提醒用户先手动安装原版。
+    // 原因：原版自动预装 + 加载器安装的复合流程中，若原版安装失败/被中断，
+    // 加载器版本虽写入但继承的原版缺失，实例管理会出现"找不到刚安装的版本"等问题；
+    // 提醒方式让用户明确先完成原版安装，流程更可控。
+    // 注：加载器版本 JSON 均含 "inheritsFrom" 字段，启动时 Java 端会读取
+    // versions/{inheritsFrom}/{inheritsFrom}.json 合并，原版缺失会导致启动崩溃。
+    if (![self isVanillaVersionInstalled:versionId]) {
+        NSDictionary *loaderDisplayNames = @{
+            @"fabric": @"Fabric",
+            @"forge": @"Forge",
+            @"neoforge": @"NeoForge",
+            @"quilt": @"Quilt",
+            @"optifine": @"OptiFine"
+        };
+        NSString *loaderDisplayName = loaderDisplayNames[loaderType] ?: loaderType;
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:localize(@"i18n_str_195", nil)
+                             message:[NSString stringWithFormat:
+                                      localize(@"i18n_str_196", nil),
+                                      loaderDisplayName, versionId]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_197", nil)
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
         return;
     }
 
-    NSLog(@"[DownloadVC] Loader %@ selected but vanilla %@ missing, auto-installing vanilla first",
-          loaderDisplayName, versionId);
-
-    // 先安装原版，成功后再串联加载器
-    __weak typeof(self) weakSelf = self;
-    [self ensureVanillaInstalled:version completion:^(BOOL success) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        if (!success) {
-            // 原版安装失败/被取消：不继续装加载器，避免产生继承缺失的"孤儿"版本
-            NSString *msg = [NSString stringWithFormat:
-                             localize(@"i18n_str_191", nil),
-                             versionId, loaderDisplayName];
-            [strongSelf showError:msg];
-            return;
-        }
-        // 原版就绪，继续安装加载器
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf) s = weakSelf;
-            if (!s) return;
-            [s performLoaderInstall:loaderType
-                         versionId:versionId
-                     loaderVersion:loaderVersion
-                  installFabricAPI:installFabricAPI
-                   installOptiFine:installOptiFine];
-        });
-    }];
-}
-
-/// 按加载器类型分派到具体安装方法（原 proceedWithVersion: 的分派逻辑）。
-- (void)performLoaderInstall:(NSString *)loaderType
-                   versionId:(NSString *)versionId
-               loaderVersion:(NSString *)loaderVersion
-            installFabricAPI:(BOOL)installFabricAPI
-             installOptiFine:(BOOL)installOptiFine {
     dispatch_async(dispatch_get_main_queue(), ^{
         if ([loaderType isEqualToString:@"fabric"]) {
             [self installFabric:versionId loaderVersion:loaderVersion installAPI:installFabricAPI];
@@ -3769,6 +3790,17 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     
     if (isJITEnabled(false)) {
         [ALTServerManager.sharedManager stopDiscovering];
+        // TXM 机型（议题 #133）：CS_DEBUGGED 置位只证明"曾经启用过"，调试器脱离后
+        // 直接启动会在 launchJVM 的 brk #0x69 上闪退。探针全无时先重附加脚本。
+        if (DeviceHasJITFlags(JIT_FLAG_FORCE_MIRRORED | JIT_FLAG_HAS_TXM) &&
+            !JIT26IsLikelyDebuggerKeepAttached() &&
+            !getPrefBool(@"debug.jit26_script_disable")) {
+            NSLog(@"[JIT] [DownloadVC] CS_DEBUGGED set but no live JIT26 debugger (ppid=%d traced=%d exn=%d) -- re-attaching",
+                  getppid(), JIT26DebuggerAttachedViaPtrace(), JIT26DebuggerViaExceptionPorts());
+            [self jit_reattachJIT26ThenLaunch:handler];
+            return;
+        }
+        NSLog(@"[JIT] [DownloadVC] JIT enabled with live JIT26 debugger, launching directly");
         handler();
         return;
     } else if (hasTrollStoreJIT) {
@@ -3784,27 +3816,125 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
             NSData *scriptData = [NSData dataWithContentsOfFile:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"UniversalJIT26.js"]];
             scriptDataString = [@"&script-data=" stringByAppendingString:[scriptData base64EncodedStringWithOptions:0]];
         }
-        [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"stikjit://enable-jit?bundle-id=%@&pid=%d%@", NSBundle.mainBundle.bundleIdentifier, getpid(), scriptDataString]] options:@{} completionHandler:nil];
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"stikjit://enable-jit?bundle-id=%@&pid=%d%@", NSBundle.mainBundle.bundleIdentifier, getpid(), scriptDataString]] options:@{} completionHandler:^(BOOL urlOK) {
+            NSLog(@"[JIT] [DownloadVC] openURL stikjit:// -> %d", urlOK);
+            if (!urlOK) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    showDialog(localize(@"Error", nil), @"stikjit:// 无响应（未安装 StikDebug？）。请安装 StikDebug 后重试，或换用其它 JIT 开启方式。\nstikjit:// was not handled (StikDebug not installed?). Install StikDebug and retry.");
+                });
+            }
+        }];
     } else {
         // Assuming 16.7-17.3.1. SideStore still lacks this URL scheme at the time of writing, so it only jumps to SideStore.
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"sidestore://sidejit-enable?pid=%d", getpid()]] options:@{} completionHandler:nil];
     }
-    
+
     // 在内容区显示 JIT 等待提示，替代弹窗
     InlineMessageView *jitAlert = [InlineMessageView showInViewController:self
                                                                     title:localize(@"launcher.wait_jit.title", nil)
-                                                                 message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
-                                                                    type:InlineMessageTypeLoading];
+                                                                  message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
+                                                                     type:InlineMessageTypeLoading];
+
+    // 后台任务断言：stikjit:// 切后台后防 iOS 立即挂起冻结等待循环。
+    __block UIBackgroundTaskIdentifier jit_bgt = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"jit-wait" expirationHandler:^{}];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (!isJITEnabled(false)) {
-            usleep(1000 * 200);
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
+        // 有界等待 120s + 心跳日志，超时走重试弹窗。
+        BOOL ok = ame169_waitForJITCondition(^{ return isJITEnabled(false); }, 120.0, @"isJITEnabled");
+        // 自愈式派发：防后台楔死主队列吞掉续接块。
+        ame185_dispatchToMainSelfHealing(^{
             [jitAlert dismiss];
-            if (handler) handler();
-        });
+            if (jit_bgt != UIBackgroundTaskInvalid) {
+                [UIApplication.sharedApplication endBackgroundTask:jit_bgt];
+                jit_bgt = UIBackgroundTaskInvalid;
+            }
+            if (ok) {
+                // 等待成功不等于能安全启动：TXM 上调试器可能再次脱离，复查不过就重挂。
+                if (DeviceHasJITFlags(JIT_FLAG_FORCE_MIRRORED | JIT_FLAG_HAS_TXM) &&
+                    !JIT26IsLikelyDebuggerKeepAttached() &&
+                    !getPrefBool(@"debug.jit26_script_disable")) {
+                    NSLog(@"[JIT] [DownloadVC] wait satisfied but JIT26 debugger is gone -- re-attaching before launch");
+                    [self jit_reattachJIT26ThenLaunch:handler];
+                } else {
+                    if (handler) handler();
+                }
+            } else {
+                [self jit_showTimeoutRetryAlert:handler];
+            }
+        }, @"DownloadVC main wait");
     });
+}
+
+// JIT26 调试器重挂统一助手（内容区 InlineMessageView 提示 + 有界等存活）。
+- (void)jit_reattachJIT26ThenLaunch:(void(^)(void))handler {
+    InlineMessageView *jitAlert = [InlineMessageView showInViewController:self
+                                                                    title:localize(@"launcher.wait_jit.title", nil)
+                                                                  message:localize(@"launcher.wait_jit.message", nil)
+                                                                     type:InlineMessageTypeLoading];
+
+    __block UIBackgroundTaskIdentifier jit_bgt = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"jit26-reattach" expirationHandler:^{}];
+
+    void (^fireURL)(void) = ^{
+        NSString *scriptDataString = @"";
+        NSData *scriptData = [NSData dataWithContentsOfFile:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"UniversalJIT26.js"]];
+        if (scriptData) {
+            scriptDataString = [@"&script-data=" stringByAppendingString:[scriptData base64EncodedStringWithOptions:0]];
+        }
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:[NSString stringWithFormat:@"stikjit://enable-jit?bundle-id=%@&pid=%d%@", NSBundle.mainBundle.bundleIdentifier, getpid(), scriptDataString]] options:@{} completionHandler:^(BOOL urlOK) {
+            NSLog(@"[JIT] [DownloadVC] re-attach stikjit:// -> %d (script=%lu bytes)", urlOK, (unsigned long)scriptData.length);
+        }];
+    };
+
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+        __block id obs = nil;
+        obs = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            [[NSNotificationCenter defaultCenter] removeObserver:obs];
+            obs = nil;
+            fireURL();
+        }];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (obs) {
+                [[NSNotificationCenter defaultCenter] removeObserver:obs];
+                obs = nil;
+                fireURL();
+            }
+        });
+    } else {
+        fireURL();
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        BOOL ok = ame169_waitForJITCondition(^{ return JIT26IsLikelyDebuggerKeepAttached(); }, 120.0, @"JIT26 debugger attach");
+        ame185_dispatchToMainSelfHealing(^{
+            [jitAlert dismiss];
+            if (jit_bgt != UIBackgroundTaskInvalid) {
+                [UIApplication.sharedApplication endBackgroundTask:jit_bgt];
+                jit_bgt = UIBackgroundTaskInvalid;
+            }
+            if (ok) {
+                if (handler) handler();
+            } else {
+                [self jit_showTimeoutRetryAlert:handler];
+            }
+        }, @"DownloadVC reattach wait");
+    });
+}
+
+// JIT 等待超时后的出路弹窗：重试 = 重走一轮 invokeAfterJITEnabled。
+- (void)jit_showTimeoutRetryAlert:(void(^)(void))handler {
+    NSLog(@"[JIT] [DownloadVC] JIT wait timed out, showing retry alert");
+    UIAlertController *retry = [UIAlertController alertControllerWithTitle:localize(@"launcher.wait_jit.title", nil)
+                                                                   message:localize(@"jit.timeout_retry_msg", nil)
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [retry addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    [retry addAction:[UIAlertAction actionWithTitle:localize(@"jit.retry", nil) style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self invokeAfterJITEnabled:handler ?: ^{}];
+    }]];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        retry.popoverPresentationController.sourceView = self.view;
+        retry.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 0, 0);
+    }
+    [self presentViewController:retry animated:YES completion:nil];
 }
 
 - (void)handleInstallerDownloadResultWithVendorName:(NSString *)vendorName
@@ -4252,7 +4382,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
         // 这样做的目的：
         //   1. 让原版 client.jar 仍可被 inheritsFrom 引用（保留原版 jar）
         //   2. OptiFine jar 作为 launchwrapper 的 tweakClass 输入
-        //   3. mainClass 设为 net.minecraft.launchwrapper.Launcher，通过 --tweakClass optifine.OptiFineTweaker 加载
+        //   3. mainClass 设为 net.minecraft.launchwrapper.Launch，通过 --tweakClass optifine.OptiFineTweaker 加载
         NSString *optifineJarPath = [NSString stringWithFormat:@"optifine/OptiFine/%@/%@.jar", gameVersion, versionId];
         NSString *optifineJarAbsPath = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), optifineJarPath];
         // 确保 jar 文件写入到正确的 libraries 路径
@@ -4273,30 +4403,47 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
             return;
         }
 
-        // 4. 创建 version.json（参照 FCL OptiFineInstallTask / HMCL OptiFineInstallTask）
-        // OptiFine 使用 launchwrapper 作为入口，通过 tweaker 加载
-        // 关键：mainClass 必须是 net.minecraft.launchwrapper.Launcher
-        //       必须添加 --tweakClass optifine.OptiFineTweaker
-        //       OptiFine jar 必须加入 libraries 列表
+        // 4. 创建 version.json（参照 ZL2 Install.OptiFine）
+        // OptiFine 使用 launchwrapper 作为入口，通过 tweaker 加载：
+        //   - mainClass 必须是 net.minecraft.launchwrapper.Launch（launchwrapper 中可执行 main 的类；
+        //     net.minecraft.launchwrapper.Launcher 并不存在，会导致 "Could not find or load main class"）
+        //   - libraries 必须包含 launchwrapper：OptiFine 1.13+ 使用安装包内嵌的 launchwrapper-of，
+        //     旧版使用 net.minecraft:launchwrapper:1.12，否则启动时报 ClassNotFoundException
+        //   - OptiFine jar 必须加入 libraries 列表
+        NSString *librariesDir = [gameDir stringByAppendingPathComponent:@"libraries"];
+        NSArray *launchWrapperLibraries = [MinecraftResourceUtils optifineLaunchWrapperLibrariesWithOptiFineJarPath:optifineJarAbsPath
+                                                                                                         librariesDir:librariesDir];
+        if (!launchWrapperLibraries) {
+            NSError *err = [NSError errorWithDomain:@"OptiFineInstall" code:4
+                                         userInfo:@{NSLocalizedDescriptionKey: localize(@"i18n_str_97", nil)}];
+            [optiManager updateTaskWithId:taskId stageAtIndex:kOptiFineStageInstall status:PLTaskStageStatusFailed];
+            [optiManager updateTaskWithId:taskId stageAtIndex:kOptiFineStageInstall progress:0 message:err.localizedDescription];
+            [[DownloadTaskManager sharedManager] setTaskWithId:taskId completedWithError:err];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                [strongSelf finishInstallerProgressWithError:err.localizedDescription];
+            });
+            return;
+        }
+        NSArray *optifineLibraries = [launchWrapperLibraries arrayByAddingObject:@{
+            @"name": [NSString stringWithFormat:@"optifine:OptiFine:%@", versionId],
+            @"downloads": @{
+                @"artifact": @{
+                    @"path": optifineJarPath,
+                    @"url": @"",  // 已下载，URL 留空
+                    @"size": @(jarData.length),
+                    @"sha1": @""
+                }
+            }
+        }];
         NSDictionary *versionJson = @{
             @"id": versionId,
             @"inheritsFrom": gameVersion,
             @"type": @"release",
-            @"mainClass": @"net.minecraft.launchwrapper.Launcher",
+            @"mainClass": @"net.minecraft.launchwrapper.Launch",
             @"minecraftArguments": @"--username ${auth_player_name} --version ${version_name} --gameDir ${game_directory} --assetsDir ${assets_root} --assetIndex ${assets_index_name} --uuid ${auth_uuid} --accessToken ${auth_access_token} --userType ${user_type} --versionType ${version_type} --tweakClass optifine.OptiFineTweaker",
-            @"libraries": @[
-                @{
-                    @"name": [NSString stringWithFormat:@"optifine:OptiFine:%@", gameVersion],
-                    @"downloads": @{
-                        @"artifact": @{
-                            @"path": optifineJarPath,
-                            @"url": @"",  // 已下载，URL 留空
-                            @"size": @(jarData.length),
-                            @"sha1": @""
-                        }
-                    }
-                }
-            ],
+            @"libraries": optifineLibraries,
             @"jar": gameVersion,  // 使用原版 jar
             @"minimumLauncherVersion": @21
         };
@@ -5561,7 +5708,10 @@ static NSString *PLSha1FromPrimaryFile(NSDictionary *primaryFile) {
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskLandscape;
+    // ★ [PORTRAIT-UNLOCK] 放开竖屏:原来是写死 Landscape ⇒ iPhone 上竖屏进不来
+    //   (主页是该 VC,它锁横屏 ⇒ 整个 App 被钉在横屏)。游戏页仍单独锁横屏。
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) { return UIInterfaceOrientationMaskAll; }
+    return UIInterfaceOrientationMaskAllButUpsideDown;
 }
 
 #pragma mark - Helper Methods

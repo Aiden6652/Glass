@@ -283,13 +283,3 @@ der Minecraft-Version zu wählen. Verringerte Auflösung reduziert die Arbeitsla
 "controller_configurator.section.footer.menu_mappings" = "Bindungen, wenn die Maus nicht gesperrt ist, z. B. auf dem Titelbildschirm oder im Pausemenü.";
 "controller_configurator.section.controller_style" = "Controller Typ";
 "controller_configurator.section.footer.controller_style" = "Zeige verschiedene Controller-Schaltflächennamen in diesem Konfigurator.";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Vanilla %@ konnte nicht installiert werden.\n\n%@ wurde nicht installiert. Bitte überprüfe deine Netzwerkverbindung und versuche es erneut.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Glasstil";
-"i18n_str_2069" = "Aus";
-"i18n_str_2070" = "Standard";
-"i18n_str_2071" = "Stark";
-"i18n_str_2072" = "Flüssigglas";

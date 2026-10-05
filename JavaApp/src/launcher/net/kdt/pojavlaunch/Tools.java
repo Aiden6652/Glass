@@ -298,6 +298,12 @@ public final class Tools {
             library.downloads.artifact.path != null)
             return library.downloads.artifact.path;
         String[] libInfos = library.name.split(":");
+        // ★ [DEMINE] 原为 libInfos[1]/[2] 直接下标：库名不足三段(非标准 Maven 坐标)时
+        //   ArrayIndexOutOfBoundsException 会冒泡到 main 线程 ⇒ 未捕获处理器 System.exit(1) 杀掉 App。
+        if (libInfos.length < 3) {
+            System.err.println("[DEMINE] artifactToPath: non-3-part library name: " + library.name);
+            return library.name.replaceAll("\\.", "/") + ".jar";
+        }
         return libInfos[0].replaceAll("\\.", "/") + "/" + libInfos[1] + "/" + libInfos[2] + "/" + libInfos[1] + "-" + libInfos[2] + ".jar";
     }
 
@@ -394,7 +400,14 @@ public final class Tools {
                     continue;
             }
 
-            String[] version = libItem.name.split(":")[2].split("\\.");
+            // ★ [DEMINE] 原为 libItem.name.split(":")[2] 直接下标：库名不足三段时
+            //   ArrayIndexOutOfBoundsException 冒泡到 main ⇒ System.exit(1) 杀掉 App。缺段则跳过该库。
+            String[] libNameParts = libItem.name.split(":");
+            if (libNameParts.length < 3) {
+                System.err.println("[DEMINE] preProcessLibraries: non-3-part library name: " + libItem.name);
+                continue;
+            }
+            String[] version = libNameParts[2].split("\\.");
             if (libItem.name.startsWith("net.java.dev.jna:jna:")) {
                 // 强制将 JNA 替换为 5.13.0 以保证 iOS 兼容性。
                 // MC 26.3+ 要求 JNA 5.17.0，但其 darwin-aarch64 libjnidispatch 在 iOS 上
@@ -460,10 +473,15 @@ createLibraryInfo(libItem);
                 outer_loop:
                 for(DependentLibrary library : customVer.libraries){
                     // Clean libraries overridden by the custom version
-                    String libName = library.name.substring(0, library.name.lastIndexOf(":"));
+                    // ★ [DEMINE] 无冒号时 lastIndexOf 返回 -1 ⇒ substring(0,-1) 抛
+                    //   StringIndexOutOfBoundsException 冒泡到 main ⇒ System.exit(1)。缺冒号则用全名。
+                    int libColonIdx = library.name.lastIndexOf(":");
+                    String libName = libColonIdx >= 0 ? library.name.substring(0, libColonIdx) : library.name;
 
                     for(DependentLibrary inheritLibrary : inheritLibraryList) {
-                        String inheritLibName = inheritLibrary.name.substring(0, inheritLibrary.name.lastIndexOf(":"));
+                        // ★ [DEMINE] 同上。
+                        int inheritColonIdx = inheritLibrary.name.lastIndexOf(":");
+                        String inheritLibName = inheritColonIdx >= 0 ? inheritLibrary.name.substring(0, inheritColonIdx) : inheritLibrary.name;
 
                         if(libName.equals(inheritLibName)){
                             System.out.println("Library " + libName + ": Replaced version " +
@@ -499,6 +517,11 @@ createLibraryInfo(libItem);
                             String perCustomArgStr = (String) perCustomArg;
                             // Check if there is a duplicate argument on combine
                             if (perCustomArgStr.startsWith("--") && totalArgList.contains(perCustomArgStr)) {
+                                // ★ [DEMINE] i 为末元素时 game[i+1] 越界 ArrayIndexOutOfBoundsException
+                                //   冒泡到 main ⇒ System.exit(1) 杀掉 App。越界则跳过该参数。
+                                if (i + 1 >= customVer.arguments.game.length) {
+                                    continue;
+                                }
                                 perCustomArg = customVer.arguments.game[i + 1];
                                 if (perCustomArg instanceof String) {
                                     perCustomArgStr = (String) perCustomArg;

@@ -1,4 +1,6 @@
 #import "ModpackInstallViewController.h"
+// ★ [GLASS-LIQUID] 材质统一走风格层(AmeGlassEffect):iOS≥26 ⇒ 系统 UIGlassEffect
+#import "UIKit+GlassSurface.h"
 #import "BackgroundManager.h"
 #import "InlineMessageView.h"
 #import "modpack/ModrinthAPI.h"
@@ -190,7 +192,8 @@
         [cell.contentView insertSubview:shadowView atIndex:0];
 
         // 添加毛玻璃效果卡片
-        UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+        // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect(不再直接 UIBlurEffect)
+        UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:AmeGlassEffect(UIBlurEffectStyleSystemMaterial)];
         blurView.translatesAutoresizingMaskIntoConstraints = NO;
         blurView.layer.cornerRadius = 12;
         blurView.layer.cornerCurve = kCACornerCurveContinuous;
@@ -222,6 +225,7 @@
                             fallback:fallbackImage
                            targetSize:CGSizeMake(38, 38)];
     cell.imageView.layer.cornerRadius = 8;
+    cell.imageView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     cell.imageView.clipsToBounds = YES;
 
     if (!self.modrinth.reachedLastPage && indexPath.row == self.list.count-1) {

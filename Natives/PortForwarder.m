@@ -1042,7 +1042,7 @@ static ssize_t writeAll(int fd, const uint8_t *buffer, size_t length) {
     __block atomic_bool ztClosed = ATOMIC_VAR_INIT(false);
 
     // 创建并发队列用于双向转发
-    dispatch_queue_t forwardQueue = dispatch_queue_create("com.angelaura.portforwarder.forward", DISPATCH_QUEUE_CONCURRENT);
+    dispatch_queue_t forwardQueue = dispatch_queue_create("com.glass.portforwarder.forward", DISPATCH_QUEUE_CONCURRENT);
     dispatch_group_t group = dispatch_group_create();
 
     // ============================================================

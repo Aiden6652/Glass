@@ -22,6 +22,22 @@ static const CGFloat kMenuButtonSize = 44.0;
 // 拖拽阈值：超过此距离算拖动，否则算点击（参照 FCL MenuView 的 10px 阈值）
 static const CGFloat kDragThreshold = 10.0;
 
+// ★ [KB-SPACE] 不可聚焦按钮。
+//   根因:修 #106「物理键盘按键崩溃」时把 SurfaceViewController.pressesBegan/Ended
+//   改成【始终调 super】以保住响应链;副作用是 UIKit 焦点系统也拿到了空格,
+//   而焦点项的默认主操作就是「空格/回车激活」——UIButton 会把主操作映射成
+//   UIControlEventPrimaryActionTriggered(即 touchUpInside)→ menuButtonTouchedUp:
+//   → onMenuButtonTapped → 打开设置菜单。于是游戏内按空格(跳跃)就误开了设置浮球。
+//   修法:canBecomeFocused 是焦点系统的唯一真相源(WWDC21: "canBecomeFocused is
+//   the single source of truth"),恒为 NO 即从根上让浮球不可能被键盘激活;
+//   触摸/拖拽(本浮球的全部交互)不经过焦点系统,行为完全不变。
+@interface AmeFocuslessButton : UIButton
+@end
+
+@implementation AmeFocuslessButton
+- (BOOL)canBecomeFocused { return NO; }   // ★ [KB-SPACE] 永不参与键盘焦点
+@end
+
 @interface GameMenuOverlayView ()
 
 // 设置按钮（圆形）
@@ -66,9 +82,11 @@ static const CGFloat kDragThreshold = 10.0;
 }
 
 - (void)setupMenuButton {
-    self.menuButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    // ★ [KB-SPACE] 用不可聚焦子类(不是裸 UIButton),杜绝空格/回车/Tab 激活浮球。
+    self.menuButton = [AmeFocuslessButton buttonWithType:UIButtonTypeSystem];
     self.menuButton.frame = CGRectMake(0, 0, kMenuButtonSize, kMenuButtonSize);
     self.menuButton.layer.cornerRadius = kMenuButtonSize / 2;
+    self.menuButton.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     // 半透明深色背景，确保在游戏画面上可见
     self.menuButton.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.1 alpha:0.6];
     self.menuButton.layer.borderWidth = 1.5;
@@ -102,6 +120,7 @@ static const CGFloat kDragThreshold = 10.0;
     self.statsLabel.textColor = [UIColor whiteColor];
     self.statsLabel.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.5];
     self.statsLabel.layer.cornerRadius = 4;
+    self.statsLabel.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
     self.statsLabel.layer.masksToBounds = YES;
     self.statsLabel.textAlignment = NSTextAlignmentCenter;
     self.statsLabel.numberOfLines = 1;
@@ -114,6 +133,23 @@ static const CGFloat kDragThreshold = 10.0;
     self.statsLabel.userInteractionEnabled = YES;
 
     [self addSubview:self.statsLabel];
+}
+
+#pragma mark - ★ [KB-SPACE] 键盘焦点护栏（浮层级）
+
+// ★ [KB-SPACE] 浮层根视图本身也不参与键盘焦点(双保险;UIView 默认即 NO,显式写死)。
+- (BOOL)canBecomeFocused { return NO; }
+
+/// ★ [KB-SPACE] 焦点系统在共同祖先的焦点环境上征询此方法:凡是把焦点往本浮层
+/// (菜单球 / FPS 标签)上送的焦点更新一律拒绝 ⇒ 键盘(空格/回车/Tab/方向键)
+/// 不可能落到浮层控件上被激活。触摸路径完全不经过焦点系统,不受任何影响。
+- (BOOL)shouldUpdateFocusInContext:(UIFocusUpdateContext *)context {
+    id<UIFocusItem> next = context.nextFocusedItem;
+    if (next && [next isKindOfClass:[UIView class]] && [(UIView *)next isDescendantOfView:self]) {
+        NSLog(@"[KB-SPACE] 拒绝键盘焦点落入游戏内设置浮层: %@", NSStringFromClass([(UIView *)next class]));
+        return NO;
+    }
+    return [super shouldUpdateFocusInContext:context];
 }
 
 #pragma mark - hitTest 穿透（关键：让触摸穿透到游戏画面）

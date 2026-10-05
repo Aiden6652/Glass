@@ -70,24 +70,29 @@
     // 不设置 self.title，避免顶部导航栏出现"陶瓦联机"标题黑条（参照 FCL 无 title 风格）
     self.view.backgroundColor = [UIColor clearColor];
 
-    // 彻底隐藏导航栏黑条（仅当作为非 modal 根页面且是栈中唯一 VC 时）
-    BOOL navBarHidden = NO;
-    if (self.navigationController &&
-        self.navigationController.viewControllers.firstObject == self &&
-        self.navigationController.presentingViewController == nil &&
-        self.navigationController.viewControllers.count == 1) {
+    // ★ [MP-BACK] 三种呈现方式区别对待，保证【任何入口都能退出】：
+    //   ① pushed(栈里非根, count>1)          ⇒ 交给系统：显示导航栏 + 系统自带返回键(不覆盖 leftBarButtonItem)
+    //   ② modal 根(presentingViewController!=nil) ⇒ 注入系统关闭按钮(Close)，dismiss 退出
+    //   ③ 非 modal 的 nav 根(count==1)        ⇒ 隐藏导航栏(原行为:启动器内容区整页呈现)
+    BOOL isPushed = (self.navigationController &&
+                     self.navigationController.viewControllers.count > 1 &&
+                     self.navigationController.viewControllers.firstObject != self);
+    BOOL isHiddenRoot = (self.navigationController &&
+                         self.navigationController.viewControllers.count == 1 &&
+                         self.navigationController.presentingViewController == nil &&
+                         self.navigationController.viewControllers.firstObject == self);
+    if (isHiddenRoot) {
         self.navigationController.navigationBarHidden = YES;
-        navBarHidden = YES;
     }
-
-    if (!navBarHidden) {
-        /* 关闭按钮（modal 模式） */
+    if (!isPushed && !isHiddenRoot) {
+        /* 关闭按钮（modal 模式）—— 注入系统关闭按钮，保证能退回进入前的页面 */
         UIBarButtonItem *closeItem = [[UIBarButtonItem alloc]
             initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                 target:self
                                 action:@selector(close)];
         self.navigationItem.leftBarButtonItem = closeItem;
     }
+    /* ① pushed：不设 leftBarButtonItem ⇒ 保留系统自带返回键(返回即回进入前的页面) */
 
     /* ZeroTier 联机入口：始终使用浮动按钮放置在视图右上角
        （导航栏可见时也保留，确保 modal/pushed 模式下可访问） */
@@ -127,6 +132,14 @@
         self.navigationController.topViewController == self) {
         self.navigationController.navigationBarHidden = YES;
     }
+    // ★ [MP-BACK] pushed 呈现(栈里非根)：确保导航栏可见 —— 容器根页(主页/实例等)通常把导航栏藏了，
+    //   不显式打开的话系统返回键也一起被藏住，等于又「出不来」。
+    if (self.navigationController &&
+        self.navigationController.viewControllers.count > 1 &&
+        self.navigationController.viewControllers.firstObject != self &&
+        self.navigationController.topViewController == self) {
+        self.navigationController.navigationBarHidden = NO;
+    }
     /* 与 MultiplayerViewController 一致：每次出现都重新透明化并应用导航栏毛玻璃 */
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
     [[BackgroundManager sharedManager] applyEffectToNavigationBar:self.navigationController.navigationBar];
@@ -140,6 +153,13 @@
         self.navigationController.viewControllers.firstObject == self &&
         self.navigationController.presentingViewController == nil) {
         self.navigationController.navigationBarHidden = NO;
+    }
+    // ★ [MP-BACK] pushed 被 pop 时把导航栏恢复为隐藏(容器根页通常无导航栏)，
+    //   避免返回主页后残留一条导航栏。
+    if (self.navigationController &&
+        self.navigationController.viewControllers.count > 1 &&
+        self.navigationController.viewControllers.firstObject != self) {
+        self.navigationController.navigationBarHidden = YES;
     }
 }
 

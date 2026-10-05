@@ -57,6 +57,11 @@ static NSString *const kPrefLegacyDownloadSource = @"general.download_source";
             // Quilt：meta → /quilt-meta，maven → /maven（BMCLAPI 标准映射）
             @[@"https://meta.quiltmc.org", [PLMirrorBMCLAPIRootURL stringByAppendingString:@"/quilt-meta"]],
             @[@"https://maven.quiltmc.org", [PLMirrorBMCLAPIRootURL stringByAppendingString:@"/maven"]],
+            // Maven Central：Forge / NeoForge 安装器自身依赖（ASM、Guava、jopt-simple 等）
+            // 直接来自中央仓库，大陆直连 repo1.maven.org 常不可达，故映射到腾讯云 maven 镜像
+            // （参考 ZL2 BMCLAPI.kt REPLACE_MIRROR_HOLDERS 中 repo1/repo.maven.apache.org 两条）
+            @[@"https://repo1.maven.org/maven2", @"https://mirrors.cloud.tencent.com/nexus/repository/maven-public"],
+            @[@"https://repo.maven.apache.org/maven2", @"https://mirrors.cloud.tencent.com/nexus/repository/maven-public"],
         ];
     });
     return pairs;
@@ -98,6 +103,20 @@ static NSString *const kPrefLegacyDownloadSource = @"general.download_source";
         }
     }
     return nil;
+}
+
+#pragma mark - 中国大陆环境判定
+
+/// 是否处于中国大陆环境（参考 ZalithLauncher 2 LocalUtils.isChinaMainland）
+///
+/// ZL2 以系统时区判定：时区 ID 为 Asia/Shanghai、Asia/Chongqing（历史遗留）、
+/// Asia/Urumqi 之一即视为大陆（其余情况返回 NO）。用于"自动"档下决定是否镜像优先，
+/// 对应 ZL2 resolveMirrorPriority(source = AUTO, mainland = true) → MIRROR_FIRST。
+BOOL PLMirrorIsChinaMainland(void) {
+    NSString *tzName = [NSTimeZone localTimeZone].name ?: @"";
+    return [tzName isEqualToString:@"Asia/Shanghai"] ||
+           [tzName isEqualToString:@"Asia/Chongqing"] ||
+           [tzName isEqualToString:@"Asia/Urumqi"];
 }
 
 #pragma mark - 公开 API
@@ -158,14 +177,21 @@ static NSString *const kPrefLegacyDownloadSource = @"general.download_source";
 }
 
 + (NSString *)curseForgeAPIBaseURL {
-    // 修复：CF 搜索强制走 MCIM 镜像（mod.mcimirror.top，免 API key）。
-    // 官方 api.curseforge.com 无 key 必 403；不依赖 assetSearchSource 偏好，
-    // 无论设置里选什么源，CF 搜索都走镜像，保证能用。
+    if ([self policyForType:PLMirrorResourceTypeAssetSearch] == PLMirrorPolicyMirrorFirst) {
+        return [NSString stringWithFormat:@"%@/curseforge/v1", PLMirrorMCIMRootURL];
+    }
+    return @"https://api.curseforge.com/v1";
+}
+
+// ★ [MODPACK-FIX] 恒定返回 CurseForge 的 MCIM 镜像基址（免 key）。
+//   供 CurseForgeAPI 在「未配置 API key」时强制回落——官方 api.curseforge.com
+//   对无 x-api-key 的请求恒 403，而镜像无 key 实测 200（字段实证见 CurseForgeAPI.m）。
++ (NSString *)mcimCurseForgeAPIBaseURL {
     return [NSString stringWithFormat:@"%@/curseforge/v1", PLMirrorMCIMRootURL];
 }
 
 + (PLMirrorPolicy)policyForType:(PLMirrorResourceType)type {
-    // 优先读取新版分资源类型策略键（值 official_first / mirror_first）
+    // 优先读取新版分资源类型策略键（值 auto / official_first / mirror_first）
     NSString *key = nil;
     switch (type) {
         case PLMirrorResourceTypeGameFile:
@@ -185,6 +211,11 @@ static NSString *const kPrefLegacyDownloadSource = @"general.download_source";
     if ([value isKindOfClass:[NSString class]]) {
         if ([value isEqualToString:@"official_first"]) return PLMirrorPolicyOfficialFirst;
         if ([value isEqualToString:@"mirror_first"]) return PLMirrorPolicyMirrorFirst;
+        if ([value isEqualToString:@"auto"]) {
+            // 自动档：大陆环境镜像优先，其余官方优先
+            // （对齐 ZL2 resolveMirrorPriority(source = AUTO, mainland)）
+            return PLMirrorIsChinaMainland() ? PLMirrorPolicyMirrorFirst : PLMirrorPolicyOfficialFirst;
+        }
     }
 
     // 回退旧键 general.download_source：official → 官方优先，bmclapi / mcim → 镜像优先
@@ -196,8 +227,8 @@ static NSString *const kPrefLegacyDownloadSource = @"general.download_source";
         }
     }
 
-    // 默认官方优先
-    return PLMirrorPolicyOfficialFirst;
+    // 默认按大陆检测（对齐 ZL2 默认 AUTO 档）：大陆镜像优先，其余官方优先
+    return PLMirrorIsChinaMainland() ? PLMirrorPolicyMirrorFirst : PLMirrorPolicyOfficialFirst;
 }
 
 @end

@@ -7,10 +7,10 @@
 #import "TrackedTextField.h"
 #import "utils.h"
 #import "ScreenUtils.h"
-// ZeroTier/Terracotta 联机暂时移除（排查启动崩溃）
-// #import "MultiplayerViewController.h"
-// #import "MultiplayerManager.h"
-// #import "TerracottaViewController.h"
+// ★ [MP-RESTORE] 联机恢复
+#import "MultiplayerViewController.h"
+#import "MultiplayerManager.h"
+#import "TerracottaViewController.h"
 #import <objc/runtime.h>
 
 // 暴露 class extension 中的私有属性，供 category 使用
@@ -45,7 +45,8 @@ static const void *kMenuDimViewKey = &kMenuDimViewKey;
         @"game.menu.force_close",          // 强制关闭
         @"game.menu.log_output",            // 日志输出
         @"game.menu.custom_controls",       // 按键布局编辑
-        @"game.menu.multiplayer",           // 联机（陶瓦联机 Terracotta，右上角可切换 ZeroTier）
+        // ★ [MP-RESTORE] 恢复「联机 / 多人游戏」菜单项（原 index 3 ⇒ 其后各项 index +1）
+        @"game.menu.multiplayer",           // 联机（陶瓦联机 Terracotta，右上角可切 ZeroTier）
         @"game.menu.toggle_stats",          // FPS/内存显示开关
         @"game.menu.toggle_controls",       // 隐藏/显示控制按钮
         @"game.menu.toggle_virtual_mouse",  // 虚拟鼠标开关
@@ -200,13 +201,14 @@ static const void *kMenuDimViewKey = &kMenuDimViewKey;
     [alert addAction:cancelAction];
 
     UIAlertAction* okAction = [UIAlertAction actionWithTitle:localize(@"OK", nil) style:UIAlertActionStyleDestructive handler:^(UIAlertAction * action) {
-        // ZeroTier/Terracotta 联机暂时移除：原 stopAllMultiplayerServices 调用注释掉
-        // @try {
-        //     [[MultiplayerManager sharedManager] stopAllMultiplayerServices];
-        //     NSLog(@"[ForceClose] Multiplayer resources cleaned up");
-        // } @catch (NSException *e) {
-        //     NSLog(@"[ForceClose] Exception while cleaning up multiplayer resources: %@", e);
-        // }
+        // ★ [MP-RESTORE] 联机恢复：强制关闭前清理联机资源（否则残留 SOCKS5 代理/端口转发/
+        //   ZeroTier 网络/AMETHYST_SOCKS5_PROXY/PLProfiles.serverIp ⇒ "存档关闭后端口仍在"）。
+        @try {
+            [[MultiplayerManager sharedManager] stopAllMultiplayerServices];
+            NSLog(@"[ForceClose] Multiplayer resources cleaned up");
+        } @catch (NSException *e) {
+            NSLog(@"[ForceClose] Exception while cleaning up multiplayer resources: %@", e);
+        }
 
         // FCL 风格：直接退出，不再做缩小动画
         if (fatalExitGroup == nil) {
@@ -251,15 +253,15 @@ static const void *kMenuDimViewKey = &kMenuDimViewKey;
 /// 对标 FCL 流程：启动游戏后通过悬浮球菜单进入联机界面，
 /// 选择当房主（创建世界→开放局域网→输入端口→生成邀请码）
 /// 或当房客（输入邀请码→加入网络→MC 多人游戏直连 127.0.0.1:25565）。
+///
+/// ★ [MP-RESTORE] 入口恢复（原 index 3）：当房主（创建世界→开放局域网→输入端口→生成邀请码）
+/// 或当房客（输入邀请码→加入网络→MC 多人游戏直连 127.0.0.1:25565）。
 - (void)actionOpenMultiplayer {
-    // ZeroTier/Terracotta 联机暂时移除（排查启动崩溃）
     [self dismissMenu];
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:localize(@"i18n_str_320", nil)
-                          message:localize(@"i18n_str_321", nil)
-                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_322", nil) style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    TerracottaViewController *vc = [[TerracottaViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 /// FCL 风格：隐藏/显示控制按钮（对应 FCL hide_all 开关）
@@ -377,6 +379,7 @@ static const void *kMenuDimViewKey = &kMenuDimViewKey;
 }
 
 - (void)didSelectMenuItem:(int)item {
+    // ★ [MP-RESTORE] case 下标与 menuArray 一一对应（已恢复原 index 3 = 联机/多人游戏）。
     switch (item) {
         case 0: // 强制关闭
             [self actionForceClose];
@@ -387,7 +390,7 @@ static const void *kMenuDimViewKey = &kMenuDimViewKey;
         case 2: // 按键布局编辑
             [self actionOpenCustomControls];
             break;
-        case 3: // 联机（陶瓦联机 Terracotta，与 HMCL/FCL/ZL2 互通；右上角可切换到 ZeroTier）
+        case 3: // 联机（陶瓦联机 Terracotta，右上角可切 ZeroTier）
             [self actionOpenMultiplayer];
             break;
         case 4: // FPS/内存显示开关

@@ -23,6 +23,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 结构：[{type:function, function:{name, description, parameters:{type:object, properties, required}}}]
 - (NSArray<NSDictionary *> *)openAIToolSchemas;
 
+/// 按工具名查找；未找到返回 nil
+- (id<AiTool> _Nullable)toolForName:(NSString *)name;
+
 /// 生成纯文本工具清单（名称 + 完整说明），供 prompt 驱动回退方案使用。
 - (NSString *)textToolCatalog;
 
@@ -31,9 +34,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 把注册自检结果落盘到 Documents/AI/ai_tools_dump.txt 并 NSLog
 - (void)dumpToolRegistrationDiagnostics;
-
-/// 按工具名查找；未找到返回 nil
-- (id<AiTool> _Nullable)toolForName:(NSString *)name;
 
 /// 参数规范化：键名小写化 + 抹平分隔符/大小写差异 → 统一小写 camelCase，
 /// 丢弃 value 为空的键；返回新字典（不改原字典）。

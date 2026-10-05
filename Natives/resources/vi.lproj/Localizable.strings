@@ -282,13 +282,3 @@
 "controller_configurator.section.footer.menu_mappings" = "Các ràng buộc khi chuột không bị khóa, chẳng hạn như trên màn hình tiêu đề hoặc trong menu tạm dừng.";
 "controller_configurator.section.controller_style" = "Loại Bộ điều khiển";
 "controller_configurator.section.footer.controller_style" = "Hiển thị các tên nút điều khiển khác nhau trong bộ cấu hình này.";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Không thể cài đặt bản vanilla %@.\n\n%@ chưa được cài đặt. Vui lòng kiểm tra kết nối mạng và thử lại.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Kiểu kính";
-"i18n_str_2069" = "Tắt";
-"i18n_str_2070" = "Tiêu chuẩn";
-"i18n_str_2071" = "Mạnh";
-"i18n_str_2072" = "Kính lỏng";

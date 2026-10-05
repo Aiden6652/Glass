@@ -24,8 +24,20 @@
 #import "ios_uikit_bridge.h"
 #import "LanPortDetector.h"
 #import "BackgroundManager.h"
-// ZeroTier/Terracotta 联机暂时移除（排查启动崩溃）
-// #import "MultiplayerManager.h"
+// ★ [LAUNCH-PROGRESS] 启动阶段上报 API(遮罩订阅 AmeLaunchProgressChangedNotification)
+#import "AmeLaunchProgress.h"
+
+// 由 Natives/ctxbridges/gl_bridge.m 提供：SDL3（MC 26.3+）路径下 GL 拥有呈现层
+// 且 MC 以「点」回报窗口尺寸，需要把 CAMetalLayer 对齐 1x。GLFW 与 Vulkan 路径恒 NO。
+extern BOOL Amethyst_SDL3SurfaceWantsPoints(void);
+// gl_bridge.m（Task 53/55）：GL 是否拥有呈现层 / 当前是否处于几何失配未治愈期。
+extern bool ame_gl_surface_owns_layer(void);
+extern bool ame_gl_surface_transposed(void);
+// ★ [BT-MOUSE-DIAG] input_bridge_v3.m 暴露的 SDL 窗口指针（原 g_sdlWindow 为 static），
+//   供取证日志判断“下游通道是否就绪”。
+extern void *CallbackBridge_sdlWindowPtr(void);
+// ★ [MP-RESTORE] 联机恢复
+#import "MultiplayerManager.h"
 
 #include "glfw_keycodes.h"
 #include "utils.h"
@@ -33,6 +45,14 @@
 #include <dlfcn.h>
 #include <mach/mach.h>
 #include <mach/task_info.h>
+
+// ★ [TAP-UNIVERSAL] 单键通用的"轻触"合成键号。
+// 启动器看不到世界，无法判断准星指着什么，因此只把"这是一次轻触"编成一个【游戏中不会出现】的
+// 合成鼠标键交给游戏侧(agent)去按 Minecraft.hitResult 决定真键。
+// 取值约定: 这里用 GLFW 键 199；native 侧 glfwButtonToSDLButton 的 default 分支会 +1 得
+// SDL 键 200，agent 侧看到的 marker 即 200（见 agent/src/TapUniversal.java TAP_MARKER_SDL）。
+// 只要不是 0/1/2(GLFW 左/右/中) 也不与手柄辅助键(GFW 3..6)冲突即可。
+#define TAP_UNIVERSAL_MARKER_GLFW 199
 
 // --- [START] TouchController Mod Support ---
 #include <arpa/inet.h>
@@ -187,14 +207,8 @@
         pojavIncrementFpsCounter();
     }
     _tickCount++;
-    // 诊断日志：前 5 次回调 + 状态切换时输出，便于追踪 clientAPI 变化
-    static BOOL s_lastActualVulkanPath = NO;
-    BOOL stateChanged = (s_lastActualVulkanPath != actualVulkanPath);
-    if (_tickCount <= 5 || stateChanged) {
-        NSLog(@"[PLDisplayLinkTarget] displayLinkTick #%lu (configuredVulkan=%d, actualVulkanPath=%d, stateChanged=%d)",
-              (unsigned long)_tickCount, _isVulkanMode, actualVulkanPath, stateChanged);
-        s_lastActualVulkanPath = actualVulkanPath;
-    }
+    // ★ [LOG-CLEAN] 原每帧/前 5 帧打 "[PLDisplayLinkTarget] displayLinkTick #N" ⇒ 已删除
+    //   (CADisplayLink 高频回调; clientAPI 变化由实际路径行为自证, 无需逐帧日志)。
 }
 
 @end
@@ -241,6 +255,54 @@ static GameSurfaceView* pojavWindow;
 @property(nonatomic) UITapGestureRecognizer *tapGesture, *doubleTapGesture;
 // TouchController 移动视角手势：右半区单指滑动
 @property(nonatomic) UIPanGestureRecognizer *moveViewPanGesture;
+
+// ★ [TAP-CLICK] 轻触即左键：记录每次轻触的落点与按下时刻。
+// 写入点：gestureRecognizer:shouldReceiveTouch:（触摸落下时即调用，不受
+// “游戏内 + TouchController” 路径下 touchesBegan 提前 return 的影响）；
+// 读取点：surfaceOnClick: 里判定位移/时长是否在阈值内，从而合成一次左键单击。
+@property(nonatomic) CGPoint tapClickDownPoint;
+@property(nonatomic) CFTimeInterval tapClickDownTime;
+@property(nonatomic) BOOL tapClickDownValid;
+
+// ★ [TAP-UNIVERSAL] 单键通用：轻触按键模式解析（auto/left/right，兼容旧 tap_click_button_right）。
+- (NSString *)tapClickEffectiveMode;
+- (BOOL)handleTapClickIfQualified:(UITapGestureRecognizer *)sender;
+
+// ★ [BT-MOUSE] 蓝牙鼠标/触控板（iOS「间接指针」）→ 鼠标事件合成。
+//   iOS 上蓝牙鼠标/触控板在部分设备（尤其 iPhone「辅助触控 → 指点设备」，
+//   以及 GameController 的 GCMouse 未报告鼠标的机型）不以 GCMouse 上报，
+//   而是以「间接指针」(UITouch.type == UITouchTypeIndirectPointer) 的
+//   hover/touch 形式送到 UIKit。本组状态复用它，经既有合成路径
+//   (sendTouchPoint: / CallbackBridge_nativeSendMouseButton) 送进游戏，
+//   与「触控模拟鼠标」、「GCMouse 硬件鼠标」路径互不打架。
+@property(nonatomic) CGPoint btPointerLastPoint;    // 上一帧指针位置（算相对位移用）
+@property(nonatomic) BOOL btPointerDown;            // 间接指针当前是否有键按住
+@property(nonatomic) NSUInteger btPointerDownMask;  // 按住的键位掩码（UIEventButtonMask）
+@property(nonatomic) BOOL btPointerTouchLogged;     // 间接指针 touches 一次性诊断日志
+@property(nonatomic) BOOL btPointerHoverLogged;     // 间接指针 hover 一次性诊断日志
+
+// ★ [BT-MOUSE-DIAG] 原始取证节流计数（在一切过滤之前打印，用来判定
+//   “系统没送 / 送了被我们滤掉 / 送了没发出去”三态）。带 *_Count 的均为节流计数。
+@property(nonatomic) NSUInteger btRawHoverCount;    // surfaceOnHover 原始到达计数
+@property(nonatomic) NSUInteger btRawTouchCount;    // 间接指针 touches 原始到达计数
+@property(nonatomic) NSUInteger btRawSendCount;     // 合成事件发送前计数
+@property(nonatomic) BOOL btRawPlatformLogged;      // 平台/辅助触控一次性提示已打
+
+// ★ [BT-MOUSE] 是否由 UIKit 间接指针路径接管（开关开 且 GCMouse 未报告任何鼠标）。
+- (BOOL)btPointerShouldHandle;
+// ★ [BT-MOUSE] 间接指针移动：游戏内→相对位移(转视角)；世界外→绝对位置(移动光标)。
+- (void)btPointerMoveToPoint:(CGPoint)point grabbing:(BOOL)grabbing;
+// ★ [BT-MOUSE] 按 UIEventButtonMask 合成鼠标按键；mask 为空且 fallbackLeft 时回退左键。
+- (void)btPointerApplyButtonMask:(NSUInteger)mask pressed:(BOOL)pressed fallbackLeft:(BOOL)fallbackLeft;
+// ★ [BT-MOUSE] 间接指针一次按键结束（抬起）：释放已按下的键 + 世界外补一次 ACTION_UP。
+- (void)btPointerHandleEndedTouch:(UITouch *)touch;
+
+// ★ [BT-MOUSE-DIAG] 发送前原始取证：判断合成事件到底有没有真的发出去。
+- (void)btRawLogSend:(NSString *)kind dx:(CGFloat)dx dy:(CGFloat)dy btn:(int)btn;
+// ★ [BT-MOUSE-DIAG] GCMouse 通道原始取证（连接/断开/初始各打一次）。
+- (void)btRawLogGCMouse:(NSString *)evt mouse:(GCMouse *)mouse;
+// ★ [BT-MOUSE-DIAG] 平台与前提一次性提示（iPhone 需辅助触控“指针设备”）。
+- (void)btRawLogPlatformIfNeeded:(NSString *)reason;
 
 @property(nonatomic) id mouseConnectCallback, mouseDisconnectCallback;
 @property(nonatomic) id controllerConnectCallback, controllerDisconnectCallback;
@@ -297,7 +359,24 @@ static GameSurfaceView* pojavWindow;
 @property(nonatomic, assign) BOOL launchOverlayDismissed;
 @property(nonatomic, strong) UIButton *launchCancelButton;     // 取消启动按钮
 
+// ★ [LAUNCH-PROGRESS] 确定型进度条 + 当前阶段文字 + 步骤骨架(见 AmeLaunchProgress.h)
+@property(nonatomic, strong) UIProgressView *launchProgressView;
+@property(nonatomic, strong) UILabel *launchStageLabel;
+@property(nonatomic, strong) NSMutableArray<UIView *> *launchStepDots;
+@property(nonatomic, strong) NSMutableArray<UILabel *> *launchStepLabels;
+
+// ★ [LAUNCH-PROGRESS] 方法前置声明：两者定义在文件后部，而 setupLaunchOverlay
+//   里用 @selector 引用 onLaunchProgressChanged —— 先声明避免 undeclared selector 告警。
+- (void)onLaunchProgressChanged;
+- (void)updateLaunchProgressUI;
+
 @end
+
+// Forward declaration: findSDL_uikitview is defined further down this file
+// (after the @implementation block, near touchesBegan). Declaring it here
+// avoids an implicit-declaration warning when pressesBegan/pressesEnded
+// forward physical keyboard events to the embedded SDL_uikitview.
+static UIView *findSDL_uikitview(UIView *root);
 
 @implementation SurfaceViewController
 
@@ -791,19 +870,22 @@ static GameSurfaceView* pojavWindow;
 // 仅 moveViewPanGesture 需要特殊判定；其他手势保持默认行为
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer == self.moveViewPanGesture) {
-        // 条件 1: TouchController 必须启用
-        if (!getPrefBool(@"control.mod_touch_enable")) return NO;
-        // 条件 2: 必须是静态库模式（mode == 2）
-        NSInteger mode = [getPrefObject(@"control.mod_touch_mode") integerValue];
-        if (mode != 2) return NO;
-        // 条件 3: 移动视角开关必须打开
-        if (!getPrefBool(@"control.mod_touch_moveview_enable")) return NO;
-        // 条件 4: 必须在游戏内（isGrabbing 为 true）
-        if (isGrabbing != JNI_TRUE) return NO;
-        // 条件 5: 触摸起点必须在 touchView 右半区
-        CGPoint location = [gestureRecognizer locationInView:self.touchView];
-        if (location.x < self.touchView.bounds.size.width / 2.0) return NO;
-        return YES;
+        // ★ [HOST-BUG-B] 「视角摇晃/移动视角」(mod_touch_moveview_enable)选项已按群主要求从
+        //   TouchController 管理界面移除,并【强制关闭】⇒ 该手势一律不启动,
+        //   无论存量偏好 control.mod_touch_moveview_enable 的值如何都忽略(迁移见 PLPreferences)。
+        return NO;
+    }
+    return YES;
+}
+
+// ★ [TAP-CLICK] 轻触即左键：在触摸落入 tapGesture 时记录落点/按下时刻。
+// 这是唯一在“所有路径”（含游戏内 + TouchController 模组，那条路径下
+// touchesBegan 会提前 return）都会被调用、且能拿到按下点的时机。
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    if (gestureRecognizer == self.tapGesture) {
+        self.tapClickDownPoint = [touch locationInView:self.rootView];
+        self.tapClickDownTime = CACurrentMediaTime();
+        self.tapClickDownValid = YES;
     }
     return YES;
 }
@@ -812,9 +894,14 @@ static GameSurfaceView* pojavWindow;
 
 // 处理右半区滑动手势，发送 MoveViewMessage 给 TouchController
 - (void)handleMoveViewPanGesture:(UIPanGestureRecognizer *)gesture {
+    // ★ [HOST-BUG-B][TC-MOVEVIEW-MIGRATE] 「视角摇晃/移动视角」已从 TouchController 管理界面
+    //   移除并【强制关闭】(启动迁移见 PLPreferences;统一解析函数 ameResolveTouchMoveViewEnabled):
+    //   无条件忽略存量偏好、直接返回(手势本就不会启动,这里是第二道兜底)。
+    BOOL hostbugbMoveViewDisabled = YES;
+    if (hostbugbMoveViewDisabled) return;
     // 双重检查（防御性编程，即使 gestureRecognizerShouldBegin 返回 YES 也再次验证）
     if (!getPrefBool(@"control.mod_touch_enable")) return;
-    if (!getPrefBool(@"control.mod_touch_moveview_enable")) return;
+    if (!ameResolveTouchMoveViewEnabled()) return;   // ★ [TC-MOVEVIEW-MIGRATE] 统一解析(恒 NO)
     if (isGrabbing != JNI_TRUE) return;
 
     UIPanGestureRecognizer *panGesture = (UIPanGestureRecognizer *)gesture;
@@ -1012,6 +1099,10 @@ static GameSurfaceView* pojavWindow;
 
     UIHoverGestureRecognizer *hoverGesture = [[NSClassFromString(@"UIHoverGestureRecognizer") alloc] initWithTarget:self action:@selector(surfaceOnHover:)];
     [self.touchView addGestureRecognizer:hoverGesture];
+    // ★ [BT-MOUSE-DIAG] 确认 hover 手势确实挂上（不挂 = 间接指针通道根本没建）。
+    NSLog(@"[BT-MOUSE][raw] hover 手势挂载: gesture=%@ host=%@ userInteraction=%d phone=%d",
+          NSStringFromClass([hoverGesture class]), NSStringFromClass([self.touchView class]),
+          self.touchView.userInteractionEnabled, btRawIsPhysicalPhone());
 
     self.tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(surfaceOnClick:)];
     self.tapGesture.allowedTouchTypes = @[@(UITouchTypeDirect)];
@@ -1092,6 +1183,8 @@ static GameSurfaceView* pojavWindow;
     self.inputTextField.delegate = self;
     self.inputTextField.font = [UIFont fontWithName:@"Menlo-Regular" size:20];
     self.inputTextField.clearsOnBeginEditing = YES;
+    // 默认拦截 SDL/IME 侧的临时 resign（Amethyst-JP 同款防护），显式开关处临时放行。
+    self.inputTextField.preventUnexpectedResign = YES;
     self.inputTextField.textAlignment = NSTextAlignmentCenter;
     self.inputTextField.sendChar = ^(jchar keychar){ CallbackBridge_nativeSendChar(keychar); };
     self.inputTextField.sendCharMods = ^(jchar keychar, int mods){ CallbackBridge_nativeSendCharMods(keychar, mods); };
@@ -1103,17 +1196,25 @@ static GameSurfaceView* pojavWindow;
     self.mouseConnectCallback = [[NSNotificationCenter defaultCenter] addObserverForName:GCMouseDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
         GCMouse* mouse = note.object;
         [self registerMouseCallbacks:mouse];
+        // ★ [BT-MOUSE-DIAG] 连接原始取证。
+        [self btRawLogGCMouse:@"connect" mouse:mouse];
         self.mousePointerView.hidden = isGrabbing || !virtualMouseEnabled;
         [self setNeedsUpdateOfPrefersPointerLocked];
     }];
     self.mouseDisconnectCallback = [[NSNotificationCenter defaultCenter] addObserverForName:GCMouseDidDisconnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
         GCMouse* mouse = note.object;
         mouse.mouseInput.mouseMovedHandler = nil;
+        // ★ [BT-MOUSE-DIAG] 断开原始取证。
+        [self btRawLogGCMouse:@"disconnect" mouse:mouse];
         [mouse.mouseInput.auxiliaryButtons makeObjectsPerformSelector:@selector(setPressedChangedHandler:) withObject:nil];
         [self setNeedsUpdateOfPrefersPointerLocked];
         if (getPrefBool(@"controll.hardware_hide")) { self.ctrlView.hidden = NO; }
     }];
+    // ★ [BT-MOUSE-DIAG] 初始摸底 + 平台前提提示：不仅 .current，遍历所有已连接鼠标。
+    [self btRawLogPlatformIfNeeded:@"viewDidLoad"];
+    [self btRawLogGCMouse:@"init" mouse:GCMouse.current];
     if (GCMouse.current != nil) { [self registerMouseCallbacks:GCMouse.current]; }
+    for (GCMouse *m in GCMouse.mice) { if (m != GCMouse.current) { [self registerMouseCallbacks:m]; } }
 
     self.controllerConnectCallback = [[NSNotificationCenter defaultCenter] addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
         GCController* controller = note.object;
@@ -1232,13 +1333,8 @@ static GameSurfaceView* pojavWindow;
     // 必须与 JavaLauncher.m 中 launchJVM 的 allocmem 计算保持一致，
     // 否则会出现 Jetsam 上限 < JVM Xmx + native 开销 的情况，
     // 导致系统在 JVM 启动阶段 SIGKILL 进程（日志表现为 "XPC connection interrupted"）。
-    int allocmem;
-    if (getPrefBool(@"java.auto_ram")) {
-        CGFloat autoRatio = getEntitlementValue(@"com.apple.private.memorystatus") ? 0.4 : 0.25;
-        allocmem = roundf((NSProcessInfo.processInfo.physicalMemory >> 20) * autoRatio);
-    } else {
-        allocmem = (int)getPrefInt(@"java.allocated_memory");
-    }
+    // Task141：启动内存单一事实源（见 ame141_currentLaunchAllocMem）。
+    int allocmem = ame141_currentLaunchAllocMem();
     // 1024 MB 留给 JVM native 堆 + UIKit/Metal/EGL 等非 Java 堆开销。
     int limit = allocmem + 1024;
     if (memorystatus_control(MEMORYSTATUS_CMD_SET_JETSAM_TASK_LIMIT, getpid(), limit, NULL, 0) == -1) {
@@ -1305,17 +1401,67 @@ static GameSurfaceView* pojavWindow;
     }
 
     resolutionScale = getPrefFloat(@"video.resolution") / 100.0;
+    // MobileGL/SDL3 初始黑屏根治：video.resolution 尚未写入偏好时，
+    // getPrefObject 返回 nil、[nil floatValue] 得 0，于是 resolutionScale=0
+    // -> contentsScale=0、windowWidth/Height=0 -> drawableSize 被 MAX(0,1)
+    // 钳成 1x1。EGLSurface 只在 gl_init_context 里创建一次，1x1 既不报错也不
+    // 崩溃，画面永久全黑，且无法自愈 —— 表现正是「必须手动调一次分辨率
+    // 才有画面」。这里把非法值（0/负/极小）统一兜底为 100%，
+    // 正常值（0.25~1.0）完全不受影响。
+    if (!(resolutionScale > 0.01f)) {
+        NSLog(@"[SurfaceVC] video.resolution invalid (%.4f) -> falling back to 100%%", resolutionScale);
+        resolutionScale = 1.0f;
+    }
     self.surfaceView.layer.contentsScale = self.screenScale * resolutionScale;
 
     physicalWidth = roundf(self.surfaceView.frame.size.width * self.screenScale);
     physicalHeight = roundf(self.surfaceView.frame.size.height * self.screenScale);
     windowWidth = roundf(physicalWidth * resolutionScale);
     windowHeight = roundf(physicalHeight * resolutionScale);
-    if ((windowWidth % 2) != 0) { --windowWidth; }
-    if ((windowHeight % 2) != 0) { --windowHeight; }
+    // 【iPhone X 1px 失配根治 —— "必须手动调一次分辨率才有画面"的成因】
+    // 旧代码在此把奇数宽/高 -- 取偶（iPhone X: 375*3=1125 -> 1124）。
+    // 但 ANGLE 建 EGL window surface 时**不读 drawableSize、也不理我们传的
+    // EGL_WIDTH/HEIGHT attribs**，而是自行按 layer.bounds x contentsScale 建面
+    // （设备实证：attribs=2436x1124，eglQuerySurface 回报 2436x1125）。
+    // 于是三套尺寸永久差 1px：
+    //     drawableSize / launchJVM 告知 MC 的值 = 2436x1124
+    //     ANGLE surface（present 的 backbuffer）   = 2436x1125
+    // Air 注释定案："drawable 必须等于将要呈现的 backbuffer 尺寸 —— 这是
+    // 帧能上屏的硬约束"，不等即 present 失配 = 全黑，且 surface 只建一次，
+    // 不会自愈；手动调一次分辨率会触发 SDL resize 事件（被 hook 改写成
+    // surface 尺寸）把 MC viewport 推到 1125，画面才出现 —— 正是用户看到的现象。
+    //
+    // Air 在 iPad（1640 是偶数）上取偶不改变任何值，所以永远踩不到；
+    // iPhone X 的 375*3=1125 是奇数，一踩一个准。
+    // 这里去掉取偶，让 launchJVM 值 == drawable == bounds x contentsScale ==
+    // surface 四者同源（Vulkan/MoltenVK 自管 swapchain，不依赖偶数尺寸）。
     if ([self.surfaceView.layer isKindOfClass:CAMetalLayer.class]) {
         CAMetalLayer *metalLayer = (CAMetalLayer *)self.surfaceView.layer;
-        metalLayer.drawableSize = CGSizeMake(MAX(windowWidth, 1), MAX(windowHeight, 1));
+        // SDL3（MC 26.3+）小窗根治：GL 路径下本层由 EGL surface 呈现，必须与 MC
+        // 的真实渲染分辨率对齐。MC 26.3+SDL3 以「点」回报窗口尺寸（viewport
+        // 812x375），旧代码无条件写 2x/3x 像素 drawableSize（2436x1125），于是
+        // EGL surface 与 MC viewport 差一个设备 scale —— 画面只占左上 1/9。
+        // 对齐 1x 后 surface == drawable == MC viewport 恒成立，CoreAnimation
+        // 把 1x 帧放大到物理屏；旋转时三者随 bounds 同步翻转，不再互相打架。
+        // Vulkan（标志为假，MoltenVK 自管 swapchain）与 GLFW 路径（MC 用的就是
+        // 像素）保持原行为，不受影响。
+        // Task 53/55：GL 拥有呈现层时，几何失配（转置/尺寸错）未治愈期间停写
+        // drawableSize —— 此期由 gl_bridge 的几何重对齐独占写权保持 present
+        // 自洽；本函数若继续写会与之每帧拉锯 = 画面分裂（Air Task53 同款 gate）。
+        // 重对齐成功后 surface==drawable==bounds 像素，本写入变为同值 no-op。
+        if (ame_gl_surface_owns_layer()) {
+            if (!ame_gl_surface_transposed()) {
+                metalLayer.drawableSize = CGSizeMake(MAX(windowWidth, 1), MAX(windowHeight, 1));
+                NSLog(@"[SurfaceVC] drawableSize=%dx%d (contentsScale %.2f, resolution %.0f%%)",
+                      (int)metalLayer.drawableSize.width, (int)metalLayer.drawableSize.height,
+                      metalLayer.contentsScale, resolutionScale * 100.0f);
+            }
+        } else {
+            metalLayer.drawableSize = CGSizeMake(MAX(windowWidth, 1), MAX(windowHeight, 1));
+            NSLog(@"[SurfaceVC] drawableSize=%dx%d (contentsScale %.2f, resolution %.0f%%)",
+                  (int)metalLayer.drawableSize.width, (int)metalLayer.drawableSize.height,
+                  metalLayer.contentsScale, resolutionScale * 100.0f);
+        }
         // 解锁帧率（关闭垂直同步）：三缓冲。
         // 默认 maximumDrawableCount（通常为 2）下，当两个 drawable 都在等待呈现时，
         // nextDrawable 会阻塞到 vblank 释放一个 drawable，间接把渲染线程锁在刷新率。
@@ -1381,6 +1527,27 @@ static GameSurfaceView* pojavWindow;
     [self updateControlHiddenState:NO];
 }
 
+// Task87：LTW × MC 26.x 兼容性预检 ------------------------------------------
+// LTW 在 iOS 上把桌面 GL 3.3 转译到 Apple 系统 ANGLE 的 GLES 3.0
+// （日志实证 "LTW: Running on OpenGL ES 3.0 with ESSL 300"），且 LTW 无纹理
+// 缓冲（TBO）模拟层。而 MC 26.x 的云渲染管线（minecraft:core/rendertype_clouds）
+// 在桌面 GL 3.3 下按核心规范使用 samplerBuffer（TBO 自 GL 3.1 起为核心特性）
+// ——ES 3.0 后端没有 GL_EXT_texture_buffer，着色器编译死于
+// "'samplerBuffer' : Illegal use of reserved word" → 资源重载阶段必崩在标题界面。
+// Zink（桌面 GL 4.x 全量）与 MobileGlues（自带 TBO 模拟）不受影响。
+// 版本口径复用 ame98_mcMajorFromVersionId（JavaLauncher.h 导出），与 ResolveLwjglVersion
+// 共用同一实现，Fabric/NeoForge/Forge 前缀形态 ID 也不会漏判。
+static BOOL ame87_mcVersionRequiresTextureBuffer(NSString *mcVersionId) {
+    if (mcVersionId.length == 0) {
+        return NO;
+    }
+    NSInteger major = ame98_mcMajorFromVersionId(mcVersionId);
+    if (major <= 0) {
+        return NO;
+    }
+    return major >= 26;
+}
+
 - (void)launchMinecraft {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Validate metadata first
@@ -1388,7 +1555,7 @@ static GameSurfaceView* pojavWindow;
             NSLog(@"[SurfaceViewController] Error: metadata is nil");
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self dismissLaunchOverlayOnError];
-                showDialog(localize(@"Error", nil), @"æ¸¸æçæ®å è½½å¤±è´¥ï¼è¯·éæ°éæ©çæ¬");
+                showDialog(localize(@"Error", nil), @"游戏资源加载失败，请重新选择版本");  // ★ [ACCT-AUDIT]
             });
             return;
         }
@@ -1400,6 +1567,20 @@ static GameSurfaceView* pojavWindow;
             windowHeight = 720;
         }
         
+        // Task87：LTW 渲染器 × MC 26.x 预检（渲染器能力缺口，见 ame87_mcVersionRequiresTextureBuffer 头注释）
+        NSString *ame87_renderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"];
+        NSString *ame87_versionId = [self.metadata[@"id"] description];
+        if ([ame87_renderer isEqualToString:@ RENDERER_NAME_LTW]
+            && ame87_mcVersionRequiresTextureBuffer(ame87_versionId)) {
+            NSLog(@"[SurfaceViewController] Task87 launch gate: LTW renderer + MC %@ blocked -- GL 3.3 requires texture buffers for the 26.x clouds pipeline, LTW's iOS backend is GLES 3.0 without GL_EXT_texture_buffer; startup would crash at the title screen", ame87_versionId);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self dismissLaunchOverlayOnError];
+                showDialog(localize(@"Error", nil),
+                    [NSString stringWithFormat:@"LTW 渲染器不支持 MC %@：\n\n26.x 的云渲染管线需要纹理缓冲（samplerBuffer），而 LTW 在 iOS 上的 ES 3.0 后端无法提供，启动后必崩在标题界面。\n\n请到 设置 → 视频设置 → 渲染器 切换到 Zink 或 MobileGlues 后重试。LTW 仍可用于 1.21.x 及更早版本。", ame87_versionId]);
+            });
+            return;
+        }
+
         // Get Java version
         int minVersion = [self.metadata[@"javaVersion"][@"majorVersion"] intValue];
         if (minVersion == 0) {
@@ -1415,7 +1596,7 @@ static GameSurfaceView* pojavWindow;
             NSLog(@"[SurfaceViewController] Error: no authenticator available");
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self dismissLaunchOverlayOnError];
-                showDialog(localize(@"Error", nil), @"è¯·åç»å½è´¦æ·");
+                showDialog(localize(@"Error", nil), @"请先登录账户");  // ★ [ACCT-AUDIT]
             });
             return;
         }
@@ -1479,14 +1660,20 @@ static GameSurfaceView* pojavWindow;
     //   - 背景显示启动器的自定义壁纸（如果有）
     //   - 屏幕正中央显示一个大的旋转加载指示器
     //   - 指示器下方显示简短的标题文字（如"正在启动 Minecraft"）
-    //   - 不显示进度条、百分比、阶段文案、信息卡片等多余元素
     //   - 底部保留一个小的"取消启动"按钮
     //
-    // 之前的实现包含了图标、进度条、百分比、已耗时、信息卡片、
-    // 阶段轮转文案等大量元素，过于复杂。FCL 的设计理念是简洁：
-    // 用户只需要知道"正在加载"即可，不需要知道详细的阶段和进度。
+    // ★ [LAUNCH-PROGRESS] 变更(2026-10)：用户要求「不然走到哪都不知道」，
+    //   在标题下方补回【确定型进度条 + 当前阶段文案 + 步骤骨架】(8 个阶段小圆点)。
+    //   数据源是 Natives/AmeLaunchProgress.h 的阶段上报 API，由 JavaLauncher.m /
+    //   本文件的启动节点喂入；不再用「按时间轮转」的假进度(FCL 式简洁保留在
+    //   转圈+标题，其余为本次新增的确定性信息)。
+    //   注意：容器 userInteractionEnabled 仍为 NO，触摸穿透行为不变。
     self.launchStartTime = [NSDate timeIntervalSinceReferenceDate];
     self.launchOverlayDismissed = NO;
+
+    // ★ [LAUNCH-PROGRESS] 每次启动都把阶段重置到「准备环境」，避免上一局残留
+    //   （Completed）导致进度条一上来就是满格。
+    AmeLaunchProgressReset();
 
     // ========================================================================
     // 全屏遮罩容器
@@ -1552,6 +1739,71 @@ static GameSurfaceView* pojavWindow;
     [centerContainer addSubview:self.launchTitleLabel];
 
     // ========================================================================
+    // ★ [LAUNCH-PROGRESS] 确定型进度条 + 当前阶段文字 + 步骤骨架
+    // ========================================================================
+    // 目的：用户明确要求「不然走到哪都不知道」—— 用确定型进度条(非转圈)+
+    //   当前阶段文案 + 每阶段一个小圆点的步骤骨架，一眼看出进度与卡点。
+    // 全部是展示型控件；遮罩 userInteractionEnabled = NO 不变，触摸照旧穿透。
+    self.launchStageLabel = [[UILabel alloc] init];
+    self.launchStageLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.launchStageLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+    self.launchStageLabel.textColor = [UIColor colorWithWhite:0.80 alpha:1.0];
+    self.launchStageLabel.textAlignment = NSTextAlignmentCenter;
+    self.launchStageLabel.numberOfLines = 2;
+    self.launchStageLabel.text = localize(AmeLaunchStageLocalizationKey(AmeLaunchProgressCurrentStage()), nil);
+    [centerContainer addSubview:self.launchStageLabel];
+
+    self.launchProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    self.launchProgressView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.launchProgressView.progressTintColor = [UIColor systemBlueColor];
+    self.launchProgressView.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.18];
+    self.launchProgressView.layer.cornerRadius = 3.0;
+    self.launchProgressView.clipsToBounds = YES;
+    [self.launchProgressView setProgress:(float)AmeLaunchProgressCurrentFraction() animated:NO];
+    [centerContainer addSubview:self.launchProgressView];
+
+    // 步骤骨架：每个阶段一行(小圆点 + 阶段名)，已过/进行中/未过 三态。
+    self.launchStepDots = [NSMutableArray array];
+    self.launchStepLabels = [NSMutableArray array];
+    UIStackView *stepsStack = [[UIStackView alloc] init];
+    stepsStack.translatesAutoresizingMaskIntoConstraints = NO;
+    stepsStack.axis = UILayoutConstraintAxisVertical;
+    stepsStack.alignment = UIStackViewAlignmentLeading;
+    stepsStack.spacing = 6.0;
+    [centerContainer addSubview:stepsStack];
+
+    NSInteger stageCount = AmeLaunchProgressStageCount();
+    for (NSInteger i = 0; i < stageCount; i++) {
+        UIView *dot = [[UIView alloc] init];
+        dot.translatesAutoresizingMaskIntoConstraints = NO;
+        dot.layer.cornerRadius = 4.0;
+        dot.userInteractionEnabled = NO;
+        [dot.widthAnchor constraintEqualToConstant:8.0].active = YES;
+        [dot.heightAnchor constraintEqualToConstant:8.0].active = YES;
+
+        UILabel *rowLabel = [[UILabel alloc] init];
+        rowLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        rowLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        rowLabel.text = localize(AmeLaunchStageLocalizationKey((AmeLaunchStage)i), nil);
+
+        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[dot, rowLabel]];
+        row.axis = UILayoutConstraintAxisHorizontal;
+        row.alignment = UIStackViewAlignmentCenter;
+        row.spacing = 8.0;
+
+        [stepsStack addArrangedSubview:row];
+        [self.launchStepDots addObject:dot];
+        [self.launchStepLabels addObject:rowLabel];
+    }
+
+    // 订阅阶段广播(AmeLaunchProgress.m 统一在主队列投递)。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onLaunchProgressChanged)
+                                                 name:AmeLaunchProgressChangedNotification
+                                               object:nil];
+    [self updateLaunchProgressUI];
+
+    // ========================================================================
     // 取消启动按钮（底部，独立添加到 self.view 不受遮罩穿透影响）
     // ========================================================================
     self.launchCancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -1572,6 +1824,8 @@ static GameSurfaceView* pojavWindow;
         // 中央容器：水平居中，垂直居中
         [centerContainer.centerXAnchor constraintEqualToAnchor:self.launchOverlayView.centerXAnchor],
         [centerContainer.centerYAnchor constraintEqualToAnchor:self.launchOverlayView.centerYAnchor],
+        // ★ [LAUNCH-PROGRESS] 固定卡片宽度：给进度条/步骤骨架一个稳定的版心(容器尺寸由它撑出)
+        [centerContainer.widthAnchor constraintEqualToConstant:280],
 
         // 旋转指示器：容器顶部居中
         [self.launchSpinner.topAnchor constraintEqualToAnchor:centerContainer.topAnchor],
@@ -1581,7 +1835,21 @@ static GameSurfaceView* pojavWindow;
         [self.launchTitleLabel.topAnchor constraintEqualToAnchor:self.launchSpinner.bottomAnchor constant:16],
         [self.launchTitleLabel.leadingAnchor constraintEqualToAnchor:centerContainer.leadingAnchor],
         [self.launchTitleLabel.trailingAnchor constraintEqualToAnchor:centerContainer.trailingAnchor],
-        [self.launchTitleLabel.bottomAnchor constraintEqualToAnchor:centerContainer.bottomAnchor],
+
+        // ★ [LAUNCH-PROGRESS] 阶段文字 → 进度条 → 步骤骨架(自上而下串起来，撑出容器底部)
+        [self.launchStageLabel.topAnchor constraintEqualToAnchor:self.launchTitleLabel.bottomAnchor constant:6],
+        [self.launchStageLabel.leadingAnchor constraintEqualToAnchor:centerContainer.leadingAnchor],
+        [self.launchStageLabel.trailingAnchor constraintEqualToAnchor:centerContainer.trailingAnchor],
+
+        [self.launchProgressView.topAnchor constraintEqualToAnchor:self.launchStageLabel.bottomAnchor constant:14],
+        [self.launchProgressView.leadingAnchor constraintEqualToAnchor:centerContainer.leadingAnchor],
+        [self.launchProgressView.trailingAnchor constraintEqualToAnchor:centerContainer.trailingAnchor],
+        [self.launchProgressView.heightAnchor constraintEqualToConstant:6],
+
+        [stepsStack.topAnchor constraintEqualToAnchor:self.launchProgressView.bottomAnchor constant:16],
+        [stepsStack.leadingAnchor constraintEqualToAnchor:centerContainer.leadingAnchor],
+        [stepsStack.trailingAnchor constraintEqualToAnchor:centerContainer.trailingAnchor],
+        [stepsStack.bottomAnchor constraintEqualToAnchor:centerContainer.bottomAnchor],
 
         // 取消按钮：底部安全区域上方
         [self.launchCancelButton.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-24],
@@ -1595,6 +1863,21 @@ static GameSurfaceView* pojavWindow;
                                              selector:@selector(onFirstFrameRendered)
                                                  name:@"PojavFirstFrameRendered"
                                                object:nil];
+
+    // 兜底：关闭 SDL GL bridge 后，GL 上下文由 SDL 自行管理，egl_bridge 的
+    // pojavSwapBuffers 不再被调用，"PojavFirstFrameRendered" 永远不会发出，
+    // 遮罩就会一直盖住画面，看起来像卡死（实测导致用户误判并手动取消启动）。
+    // 这里加一个宽松的超时，到点直接移除遮罩 —— 遮罩只是加载提示，
+    // 不该成为进入游戏的门槛。
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.launchOverlayDismissed) return;
+        NSLog(@"[SurfaceViewController] Launch overlay timeout after 45s: "
+              @"no PojavFirstFrameRendered received (SDL owns the GL context; "
+              @"egl_bridge swap is not used). Dismissing overlay so it cannot block gameplay.");
+        [strongSelf dismissLaunchOverlayOnError];
+    });
 }
 
 /// 取消启动：用户点击"取消启动"按钮时调用。
@@ -1628,10 +1911,61 @@ static GameSurfaceView* pojavWindow;
     // 已不再创建 launchStageTimer，此方法不会被调用）。
 }
 
+// ★ [LAUNCH-PROGRESS] 阶段/进度广播回调（AmeLaunchProgress.m 保证在主队列投递）。
+- (void)onLaunchProgressChanged {
+    [self updateLaunchProgressUI];
+}
+
+// ★ [LAUNCH-PROGRESS] 依据上报的当前阶段，刷新进度条 / 阶段文字 / 步骤骨架三态。
+- (void)updateLaunchProgressUI {
+    if (self.launchOverlayDismissed) return;
+    if (!self.launchProgressView || !self.launchStageLabel) return;
+
+    AmeLaunchStage stage = AmeLaunchProgressCurrentStage();
+    double fraction = AmeLaunchProgressCurrentFraction();
+    NSString *key = AmeLaunchProgressCurrentKey();
+
+    NSString *stageText = (key.length > 0)
+        ? localize(key, nil)
+        : localize(AmeLaunchStageLocalizationKey(stage), nil);
+    self.launchStageLabel.text = stageText;
+
+    [self.launchProgressView setProgress:(float)fraction animated:YES];
+
+    for (NSUInteger i = 0; i < self.launchStepDots.count; i++) {
+        UIView *dot = self.launchStepDots[i];
+        UILabel *rowLabel = self.launchStepLabels[i];
+        BOOL done = (NSInteger)i < (NSInteger)stage;
+        BOOL current = (NSInteger)i == (NSInteger)stage;
+        if (done) {
+            dot.backgroundColor = [UIColor systemGreenColor];
+            dot.layer.borderWidth = 0.0;
+            rowLabel.textColor = [UIColor colorWithWhite:0.85 alpha:1.0];
+            rowLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        } else if (current) {
+            dot.backgroundColor = [UIColor systemBlueColor];
+            dot.layer.borderWidth = 0.0;
+            rowLabel.textColor = [UIColor whiteColor];
+            rowLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+        } else {
+            dot.backgroundColor = [UIColor clearColor];
+            dot.layer.borderWidth = 1.0;
+            dot.layer.borderColor = [UIColor colorWithWhite:0.45 alpha:1.0].CGColor;
+            rowLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1.0];
+            rowLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        }
+    }
+}
+
 /// 首帧渲染通知回调：淡出并移除启动遮罩层
 - (void)onFirstFrameRendered {
+    // ★ [LAUNCH-PROGRESS] 首帧渲染 = 启动完成，先把阶段推到 Completed。
+    AmeLaunchProgressSetStage(AmeLaunchStageCompleted);
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.launchOverlayDismissed) return;
+        // ★ [LAUNCH-PROGRESS] 撤遮罩前把进度条刷到满格 —— updateLaunchProgressUI 会
+        //   被 launchOverlayDismissed 早退挡住，所以必须在置位之前调用。
+        [self updateLaunchProgressUI];
         self.launchOverlayDismissed = YES;
 
         [self.launchSpinner stopAnimating];
@@ -1656,6 +1990,7 @@ static GameSurfaceView* pojavWindow;
             [self.launchCancelButton removeFromSuperview];
             self.launchCancelButton = nil;
             [[NSNotificationCenter defaultCenter] removeObserver:self name:@"PojavFirstFrameRendered" object:nil];
+            [[NSNotificationCenter defaultCenter] removeObserver:self name:AmeLaunchProgressChangedNotification object:nil];
             NSLog(@"[SurfaceViewController] Launch overlay dismissed after %.1f seconds", elapsed);
         }];
     });
@@ -1669,6 +2004,7 @@ static GameSurfaceView* pojavWindow;
 
         [self.launchSpinner stopAnimating];
         [[NSNotificationCenter defaultCenter] removeObserver:self name:@"PojavFirstFrameRendered" object:nil];
+        [[NSNotificationCenter defaultCenter] removeObserver:self name:AmeLaunchProgressChangedNotification object:nil];
 
         [self.launchOverlayView removeFromSuperview];
         self.launchOverlayView = nil;
@@ -1794,9 +2130,12 @@ static GameSurfaceView* pojavWindow;
 
     if (gestureRecognizer.state == UIGestureRecognizerStateBegan) {
         if (self.inputTextField.isFirstResponder) {
+            self.inputTextField.preventUnexpectedResign = NO;
             [self.inputTextField resignFirstResponder];
+            self.inputTextField.preventUnexpectedResign = YES;
             self.inputTextField.alpha = 1.0f;
         } else {
+            self.inputTextField.preventUnexpectedResign = YES;
             [self.inputTextField becomeFirstResponder];
             self.inputTextField.text = @" ";
         }
@@ -1852,8 +2191,15 @@ static GameSurfaceView* pojavWindow;
             [KeyboardInput sendKeyEvent:press.key down:YES];
         }
     }
+    // Forward to SDL view for MC 26.3 (SDL3 input)
+    UIView *sdlView = findSDL_uikitview(self.view);
+    if (sdlView) [sdlView pressesBegan:presses withEvent:event];
     // Always call super so that inputTextField (UITextInput) can receive
     // key events for text input (e.g., Minecraft chat).
+    // ★ [KB-SPACE] 别在这里改回「已处理就跳过 super」:#106 键盘崩溃正是跳过 super
+    //   打断响应链造成的。空格误开设置浮球的问题改由「UI 侧不可聚焦」从源头解决
+    //   (GameMenuOverlayView.menuButton / ControlButton 的 canBecomeFocused=NO,
+    //    外加下面 shouldUpdateFocusInContext: 的浮层级护栏),与本处 super 解耦。
     [super pressesBegan:presses withEvent:event];
 }
 
@@ -1863,9 +2209,160 @@ static GameSurfaceView* pojavWindow;
             [KeyboardInput sendKeyEvent:press.key down:NO];
         }
     }
+    // Forward to SDL view for MC 26.3 (SDL3 input)
+    UIView *sdlView = findSDL_uikitview(self.view);
+    if (sdlView) [sdlView pressesEnded:presses withEvent:event];
     // Always call super so that inputTextField (UITextInput) can receive
     // key-up events properly.
     [super pressesEnded:presses withEvent:event];
+}
+
+#pragma mark - ★ [KB-SPACE] 键盘焦点护栏（游戏 VC 级）
+
+// ★ [KB-SPACE] 第二道闸(不碰响应链):游戏运行期间,拒绝键盘焦点落到「游戏内启动器浮层」
+//   —— 设置浮球(GameMenuOverlayView)与屏幕自定义控件(ControlLayout)上。
+//   第一道闸在控件侧(两者的 canBecomeFocused=NO);这里再兜一层,防止将来新增
+//   可聚焦控件时无人接管,并顺手覆盖「回车/方向键/Tab」等其它激活/导航键。
+//   注意:这里【完全不动】pressesBegan/Ended 的 super 调用,#106 的键盘崩溃修复
+//   (响应链不断)原样保留 —— 本护栏只保证 UI 侧无焦点可被键盘激活。
+- (BOOL)shouldUpdateFocusInContext:(UIFocusUpdateContext *)context {
+    id<UIFocusItem> next = context.nextFocusedItem;
+    if (next && [next isKindOfClass:[UIView class]]) {
+        UIView *v = (UIView *)next;
+        BOOL inOverlay = (self.gameMenuOverlay && (v == self.gameMenuOverlay || [v isDescendantOfView:self.gameMenuOverlay]));
+        BOOL inControls = (self.ctrlView && (v == self.ctrlView || [v isDescendantOfView:self.ctrlView]));
+        if (inOverlay || inControls) {
+            NSLog(@"[KB-SPACE] 拒绝键盘焦点落入游戏内启动器控件: %@", NSStringFromClass([v class]));
+            return NO;
+        }
+    }
+    return [super shouldUpdateFocusInContext:context];
+}
+
+#pragma mark - ★ [BT-MOUSE] Bluetooth mouse / trackpad (iOS indirect pointer)
+
+// ★ [BT-MOUSE-DIAG] 物理设备判定：UIDevice.model（绕开 UIKit+hook.m 把 idiom 强制成 Pad）。
+static BOOL btRawIsPhysicalPhone(void) {
+    NSString *model = [[UIDevice currentDevice].model lowercaseString];
+    return [model containsString:@"iphone"] || [model containsString:@"ipod"];
+}
+
+// ★ [BT-MOUSE-DIAG] 取 UIAccessibilityIsAssistiveTouchRunning（dlsym，缺失则 unknown）。
+//   注意：该 API 只反映“辅助触控总开关”；“指针设备”是否已连接无公开 API。
+typedef BOOL (*btRawAXFunc)(void);
+static btRawAXFunc btRawAXGet(void) {
+    static btRawAXFunc f = NULL; static BOOL looked = NO;
+    if (!looked) { looked = YES; f = (btRawAXFunc)dlsym(RTLD_DEFAULT, "UIAccessibilityIsAssistiveTouchRunning"); }
+    return f;
+}
+
+// ★ [BT-MOUSE-DIAG] 发送前原始取证：一行判定“合成事件到底有没有发出去”。
+//   同时给出下游闸门：glfwBtn=0 且 sdlWin=0 ⇒ 两条下游通道都关着，事件必然被丢弃。
+- (void)btRawLogSend:(NSString *)kind dx:(CGFloat)dx dy:(CGFloat)dy btn:(int)btn {
+    self.btRawSendCount++;
+    if (self.btRawSendCount > 30 && self.btRawSendCount % 20 != 0) return;   // 节流
+    NSLog(@"[BT-MOUSE][raw] send #%lu: kind=%@ dx=%.1f dy=%.1f btn=%d grabbed=%d inputReady=%d sdlWin=%p glfwBtn=%p glfwCursor=%p",
+          (unsigned long)self.btRawSendCount, kind, dx, dy, btn,
+          isGrabbing, isInputReady, CallbackBridge_sdlWindowPtr(),
+          (void *)GLFW_invoke_MouseButton, (void *)GLFW_invoke_CursorPos);
+}
+
+// ★ [BT-MOUSE-DIAG] GCMouse 通道原始取证（连接/断开/初始各打一次）。
+- (void)btRawLogGCMouse:(NSString *)evt mouse:(GCMouse *)mouse {
+    NSLog(@"[BT-MOUSE][raw] GCMouse: evt=%@ count=%lu cur=%d mouseInput=%d pref=%d prefLocked=%d phone=%d",
+          evt, (unsigned long)GCMouse.mice.count, GCMouse.current != nil,
+          (mouse != nil && mouse.mouseInput != nil),
+          getPrefBool(@"control.bt_pointer_enable"), [self prefersPointerLocked],
+          btRawIsPhysicalPhone());
+}
+
+// ★ [BT-MOUSE-DIAG] 平台与前提一次性提示（进游戏时打一次）。
+//   iPhone 上蓝牙鼠标不是系统级指点设备：必须开【设置→辅助功能→触控→辅助触控→指针设备】，
+//   否则系统根本不产生指针事件（GCMouse 也不上报），App 侧看不到任何东西。
+- (void)btRawLogPlatformIfNeeded:(NSString *)reason {
+    if (self.btRawPlatformLogged) return;
+    self.btRawPlatformLogged = YES;
+    BOOL phone = btRawIsPhysicalPhone();
+    btRawAXFunc axf = btRawAXGet();
+    BOOL axKnown = (axf != NULL);
+    BOOL axOn = axKnown ? axf() : NO;
+    NSLog(@"[BT-MOUSE][raw] platform: device=%@ reason=%@ GCMouse.count=%lu assistiveTouch=%@",
+          phone ? @"iPhone" : @"iPad/other", reason, (unsigned long)GCMouse.mice.count,
+          axKnown ? (axOn ? @"on" : @"off") : @"unknown");
+    if (phone && GCMouse.mice.count == 0 && (!axKnown || !axOn)) {
+        NSLog(@"[BT-MOUSE] iPhone 未开启辅助触控“指针设备” ⇒ 系统不会派发指针事件；"
+              @"请到 设置→辅助功能→触控→辅助触控 打开(并在其内把蓝牙鼠标连接为“指针设备”)，"
+              @"或在 iPad 上使用。");
+    }
+}
+
+// ★ [BT-MOUSE] 开关默认开；仅当 GameController 未报告任何鼠标时才接管，
+//   以免与 GCMouse 路径（iPad 硬件鼠标，见 registerMouseCallbacks:）双重位移/双重点击。
+- (BOOL)btPointerShouldHandle {
+    if (!getPrefBool(@"control.bt_pointer_enable")) return NO;
+    if (GCMouse.mice.count > 0) return NO;
+    return YES;
+}
+
+// ★ [BT-MOUSE] 间接指针移动。游戏内(isGrabbing)：指针未被系统锁定(如 iPhone 辅助指针)，
+//   用相邻两帧绝对位置差分合成相对位移，走 ACTION_MOVE_MOTION → 转视角；
+//   世界外：绝对位置 ACTION_MOVE → 驱动菜单光标。两条路径都复用 sendTouchPoint:，
+//   与触控模拟鼠标共用同一套 SDL/GLFW 合成逻辑。
+- (void)btPointerMoveToPoint:(CGPoint)point grabbing:(BOOL)grabbing {
+    if (grabbing) {
+        CGPoint d = CGPointMake(point.x - self.btPointerLastPoint.x,
+                                point.y - self.btPointerLastPoint.y);
+        if (d.x != 0.0 || d.y != 0.0) {
+            // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+            [self btRawLogSend:@"moveMotion" dx:d.x dy:d.y btn:-1];
+            [self sendTouchPoint:CGPointMake(d.x, d.y) withEvent:ACTION_MOVE_MOTION];
+        }
+    } else {
+        // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+        [self btRawLogSend:@"moveAbs" dx:point.x dy:point.y btn:-1];
+        [self sendTouchPoint:point withEvent:ACTION_MOVE];
+    }
+    self.btPointerLastPoint = point;
+}
+
+// ★ [BT-MOUSE] 把 UIEventButtonMask 映射成 GLFW 鼠标按键（与既有硬件鼠标路径同一出口）。
+//   主键→左键、副键→右键；iOS 间接指针不提供中键，故中键不做（见报告「未做」一节）。
+- (void)btPointerApplyButtonMask:(NSUInteger)mask pressed:(BOOL)pressed fallbackLeft:(BOOL)fallbackLeft {
+    BOOL any = NO;
+    if (mask & UIEventButtonMaskPrimary) {
+        // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+        [self btRawLogSend:(pressed ? @"btnDown" : @"btnUp") dx:0 dy:0 btn:GLFW_MOUSE_BUTTON_LEFT];
+        CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_LEFT, pressed, 0);
+        any = YES;
+    }
+    if (mask & UIEventButtonMaskSecondary) {
+        // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+        [self btRawLogSend:(pressed ? @"btnDown" : @"btnUp") dx:0 dy:0 btn:GLFW_MOUSE_BUTTON_RIGHT];
+        CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_RIGHT, pressed, 0);
+        any = YES;
+    }
+    if (!any && fallbackLeft) {
+        // 拿不到位掩码时兜底：按下=左键（与既有「轻触=左键」语义一致）。
+        // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+        [self btRawLogSend:(pressed ? @"btnDown" : @"btnUp") dx:0 dy:0 btn:GLFW_MOUSE_BUTTON_LEFT];
+        CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_LEFT, pressed, 0);
+    }
+}
+
+// ★ [BT-MOUSE] 间接指针一次按键结束：释放按下的键，世界外再补一次 ACTION_UP。
+- (void)btPointerHandleEndedTouch:(UITouch *)touch {
+    if (![self btPointerShouldHandle]) return;
+    if (self.btPointerDown) {
+        [self btPointerApplyButtonMask:self.btPointerDownMask pressed:NO fallbackLeft:NO];
+        self.btPointerDown = NO;
+        self.btPointerDownMask = 0;
+    }
+    if (isGrabbing != JNI_TRUE) {
+        CGPoint p = [touch locationInView:self.rootView];
+        // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+        [self btRawLogSend:@"upAbs" dx:p.x dy:p.y btn:-1];
+        [self sendTouchPoint:p withEvent:ACTION_UP];
+    }
 }
 
 - (BOOL)prefersPointerLocked {
@@ -1879,16 +2376,24 @@ static GameSurfaceView* pojavWindow;
         // When pointer is locked (in-game grabbing), deltaX/deltaY are true deltas.
         // When pointer is NOT locked (menu, or Bluetooth mouse before lock activates),
         // we still send the delta so the virtual mouse or cursor can move.
+        // ★ [BT-MOUSE-DIAG] 通道1 发送前取证。
+        [self btRawLogSend:@"gcMouseMove" dx:deltaX dy:-deltaY btn:-1];
         [self sendTouchPoint:CGPointMake(deltaX, -deltaY) withEvent:ACTION_MOVE_MOTION];
     };
 
     mouse.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput * _Nonnull button, float value, BOOL pressed) {
+        // ★ [BT-MOUSE-DIAG] 通道1 发送前取证。
+        [self btRawLogSend:(pressed ? @"gcMouseDown" : @"gcMouseUp") dx:0 dy:0 btn:GLFW_MOUSE_BUTTON_LEFT];
         CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_LEFT, pressed, 0);
     };
     mouse.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput * _Nonnull button, float value, BOOL pressed) {
+        // ★ [BT-MOUSE-DIAG] 通道1 发送前取证。
+        [self btRawLogSend:(pressed ? @"gcMouseDown" : @"gcMouseUp") dx:0 dy:0 btn:GLFW_MOUSE_BUTTON_MIDDLE];
         CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_MIDDLE, pressed, 0);
     };
     mouse.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput * _Nonnull button, float value, BOOL pressed) {
+        // ★ [BT-MOUSE-DIAG] 通道1 发送前取证。
+        [self btRawLogSend:(pressed ? @"gcMouseDown" : @"gcMouseUp") dx:0 dy:0 btn:GLFW_MOUSE_BUTTON_RIGHT];
         CallbackBridge_nativeSendMouseButton(GLFW_MOUSE_BUTTON_RIGHT, pressed, 0);
     };
     for (int i = 0; i < MIN(mouse.mouseInput.auxiliaryButtons.count, 5); i++) {
@@ -1909,12 +2414,102 @@ static GameSurfaceView* pojavWindow;
     }
 }
 
+// ★ [TAP-CLICK] 轻触即左键：判定本次轻触是否满足“位移 < 阈值 且 时长 < 阈值”，
+// 满足则合成“一次完整的左键单击”(press + 33ms 后 release，位置取按下点)。
+// 返回 YES 表示已按新逻辑处理，调用方不再走旧的“点按”分支。
+- (BOOL)handleTapClickIfQualified:(UITapGestureRecognizer *)sender {
+    if (!getPrefBool(@"control.tap_click_enable")) return NO;   // 开关（默认开）
+    if (!self.enableMouseGestures) return NO;                   // 与鼠标手势开关保持一致
+    if (!self.tapClickDownValid) return NO;                     // 没记录到按下点（兜底）
+
+    CGPoint upPoint = [sender locationInView:self.rootView];
+    CGFloat dx = upPoint.x - self.tapClickDownPoint.x;
+    CGFloat dy = upPoint.y - self.tapClickDownPoint.y;
+    CGFloat moved = sqrt(dx * dx + dy * dy);                    // 抬起点与按下点的位移(pt)
+
+    CGFloat maxMove = getPrefFloat(@"control.tap_click_move");        // 位移阈值(pt)
+    if (maxMove <= 0.0) maxMove = 10.0;                               // 兜底默认 10pt
+    CGFloat maxDuration = getPrefFloat(@"control.tap_click_duration") / 1000.0; // 时长阈值(ms→s)
+    if (maxDuration <= 0.0) maxDuration = 0.3;                        // 兜底默认 300ms
+
+    CFTimeInterval elapsed = CACurrentMediaTime() - self.tapClickDownTime;
+    self.tapClickDownValid = NO;    // 每次触摸只判定一次，避免重复合成
+
+    if (moved > maxMove || elapsed > maxDuration) return NO;    // 超阈值 → 交给旧逻辑(拖动/长按)
+    if (currentHotbarSlot != -1) return NO;                     // 落在快捷栏 → 交给旧逻辑选槽
+
+    // ★ [TAP-UNIVERSAL] 单键通用：轻触发哪个键由模式决定。
+    //   auto (默认) ⇒ 发"合成 marker 键" TAP_UNIVERSAL_MARKER_GLFW，由游戏侧 agent 按准星
+    //                 目标路由(实体/打空→左键；方块可交互→右键打开；手持可放置→右键放置；
+    //                 普通方块空手→左键挖掘)。启动器看不到世界，所以判定必须在游戏侧。
+    //   left        ⇒ 直接发左键(等价旧默认行为)。
+    //   right       ⇒ 直接发右键(等价旧 tap_click_button_right=开)。
+    // ★ [TAP-SCOPE] 作用域门控：合成 marker(单键通用)【只在游戏世界里】有效。
+    //   判据用本文件既有的 “在世界里” 信号 isGrabbing —— MC 只在与世界交互、且
+    //   没有任何 GUI 界面(screen)打开时才抓取鼠标：主菜单/选项/暂停菜单/资源加载
+    //   等一切“有界面”场景 isGrabbing == JNI_FALSE。同款判据见
+    //   moveViewPanGesture(gestureRecognizerShouldBegin: 条件4)、surfaceOnHover、
+    //   callback_SurfaceViewController_touchHotbar(首行 isGrabbing 检查)。
+    //   为什么必须门控：marker 是给游戏侧 agent 按 hitResult 路由用的【合成键】(199)，
+    //   而主菜单里 hitResult 为空、点击由 Gui screen 消费 ⇒ 菜单里发 marker 等于
+    //   空操作，用户看到的就是“轻触没反应、只有长按(真左键)有反应”。
+    //   修法：世界里(被抓取)保持 marker 交 agent 路由；世界外(菜单/选项/暂停菜单)
+    //   一律直接发真左键 —— 即改动前 surfaceOnClick 旧分支在菜单里的行为
+    //   (isGrabbing ? RIGHT : LEFT)。
+    NSString *mode = [self tapClickEffectiveMode];
+    BOOL inGameWorld = (isGrabbing == JNI_TRUE);   // ★ [TAP-SCOPE]
+    int button;
+    if ([mode isEqualToString:@"left"]) {
+        button = GLFW_MOUSE_BUTTON_LEFT;
+    } else if ([mode isEqualToString:@"right"]) {
+        button = GLFW_MOUSE_BUTTON_RIGHT;
+    } else if (inGameWorld) {
+        // ★ [TAP-SCOPE] auto + 世界里：合成 marker，交游戏侧按 hitResult 路由
+        button = TAP_UNIVERSAL_MARKER_GLFW;
+    } else {
+        // ★ [TAP-SCOPE] auto + 世界外(主菜单/选项/暂停菜单)：直接真左键
+        button = GLFW_MOUSE_BUTTON_LEFT;
+    }
+    // 光标先落到“按下点”(符合直觉)，再发一次完整的 press + release。
+    [self sendTouchPoint:self.tapClickDownPoint withEvent:ACTION_DOWN];
+    CallbackBridge_nativeSendMouseButton(button, 1, 0);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 33 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        CallbackBridge_nativeSendMouseButton(button, 0, 0);
+    });
+    return YES;
+}
+
+// ★ [TAP-UNIVERSAL] 轻触按键模式解析（单键通用的"模式"来源）。
+//   优先新键 control.tap_click_mode ∈ {auto,left,right}；
+//   向后兼容旧键 control.tap_click_button_right(=YES ⇒ 强制 right，即旧"轻触=右键放置")。
+//   非法/缺失一律回退 auto。两端都是 NSString 比较，无需新增 getPrefString。
+- (NSString *)tapClickEffectiveMode {
+    if (getPrefBool(@"control.tap_click_button_right")) return @"right";  // 旧开关优先(兼容)
+    id v = getPrefObject(@"control.tap_click_mode");
+    if ([v isKindOfClass:[NSString class]]) {
+        NSString *s = [(NSString *)v lowercaseString];
+        if ([s isEqualToString:@"left"] || [s isEqualToString:@"right"] || [s isEqualToString:@"auto"]) {
+            return s;
+        }
+    }
+    return @"auto";
+}
+
 - (void)surfaceOnClick:(UITapGestureRecognizer *)sender {
     if (sender.state == UIGestureRecognizerStateBegan || sender.state == UIGestureRecognizerStateEnded){
         if(self.shouldTriggerHaptic) {
             [self.lightHaptic impactOccurred];
         }
     }
+
+    // ★ [TAP-CLICK] 轻触即左键。这条判断独立于 shouldTriggerClick —— 后者在
+    // “游戏内 + TouchController 模组”路径下不会被置位（touchesBegan 提前 return），
+    // 导致轻触不生效、只有长按才发左键。新逻辑命中即 return，避免与旧分支重复发键。
+    if (sender.state == UIGestureRecognizerStateRecognized &&
+        [self handleTapClickIfQualified:sender]) {
+        return;
+    }
+
     if (!self.shouldTriggerClick) return;
 
     if (sender.state == UIGestureRecognizerStateRecognized) {
@@ -1952,8 +2547,46 @@ static GameSurfaceView* pojavWindow;
 }
 
 - (void)surfaceOnHover:(UIGestureRecognizer *)sender {
-    if (isGrabbing) return;
     CGPoint point = [sender locationInView:self.rootView];
+
+    // ★ [BT-MOUSE-DIAG] 过滤前原始取证（节流）：判定系统到底有没有派发 hover。
+    self.btRawHoverCount++;
+    if (self.btRawHoverCount <= 20 || self.btRawHoverCount % 30 == 0) {
+        NSLog(@"[BT-MOUSE][raw] hover #%lu: state=%ld loc=(%.0f,%.0f) gcMouse=%lu handle=%d grabbed=%d enable=%d",
+              (unsigned long)self.btRawHoverCount, (long)sender.state, point.x, point.y,
+              (unsigned long)GCMouse.mice.count, [self btPointerShouldHandle],
+              isGrabbing, getPrefBool(@"control.bt_pointer_enable"));
+    }
+
+    // ★ [BT-MOUSE] GCMouse 缺席时（如 iPhone 辅助触控「指点设备」）由 hover 驱动指针运动：
+    //   游戏内→相邻帧差分合成相对位移（转视角）；世界外→绝对位置（移动光标）。
+    //   GCMouse 存在时维持原逻辑（硬件鼠标走 registerMouseCallbacks:）。
+    //   注意：按键按住期间(mouseDown)位移交给 touchesMoved，避免与之双重位移。
+    if ([self btPointerShouldHandle]) {
+        if (!self.btPointerHoverLogged) {
+            self.btPointerHoverLogged = YES;
+            NSLog(@"[BT-MOUSE] hover 指针接管: state=%ld GCMouse=%lu grabbing=%d", 
+                  (long)sender.state, (unsigned long)GCMouse.mice.count, isGrabbing);
+        }
+        switch (sender.state) {
+            case UIGestureRecognizerStateBegan:
+                self.btPointerLastPoint = point;
+                if (isGrabbing != JNI_TRUE) [self sendTouchPoint:point withEvent:ACTION_DOWN];
+                break;
+            case UIGestureRecognizerStateChanged:
+                if (!self.btPointerDown) [self btPointerMoveToPoint:point grabbing:(isGrabbing == JNI_TRUE)];
+                break;
+            case UIGestureRecognizerStateEnded:
+            case UIGestureRecognizerStateCancelled:
+                if (isGrabbing != JNI_TRUE) [self sendTouchPoint:point withEvent:ACTION_UP];
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    if (isGrabbing) return;
     switch (sender.state) {
         case UIGestureRecognizerStateBegan:
             [self sendTouchPoint:point withEvent:ACTION_DOWN];
@@ -2045,9 +2678,12 @@ static GameSurfaceView* pojavWindow;
                 case SPECIALBTN_KEYBOARD:
                     if (held == 0) {
                         if (self.inputTextField.isFirstResponder) {
+                            self.inputTextField.preventUnexpectedResign = NO;
                             [self.inputTextField resignFirstResponder];
+                            self.inputTextField.preventUnexpectedResign = YES;
                             self.inputTextField.alpha = 1.0f;
                         } else {
+                            self.inputTextField.preventUnexpectedResign = YES;
                             [self.inputTextField becomeFirstResponder];
                             self.inputTextField.text = @" ";
                         }
@@ -2088,6 +2724,13 @@ static GameSurfaceView* pojavWindow;
             }
         } else if (keycode > 0) {
             CallbackBridge_nativeSendKey(keycode, 0, held, 0);
+            // Task83：按钮键盘打字支持。custom 布局“键盘图标”抽屉里的
+            // 字母/数字/符号按钮只发 key 事件，而 MC 1.13+ 聊天框只消费
+            // charTyped（text-input）事件 → 此前完全打不了字。按下时补发
+            // 字符；Ctrl/Alt 按住时由助手抑制（快捷键语义，组合键不灌字符）。
+            if (held) {
+                CallbackBridge_buttonKeySynthesizeText(keycode);
+            }
         }
     }
 }
@@ -2196,6 +2839,407 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
     }
 }
 
+// Find the embedded SDL_uikitview (MC 26.3 uses SDL3 for input).
+static UIView *findSDL_uikitview(UIView *root) {
+    static Class sdlCls = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ sdlCls = NSClassFromString(@"SDL_uikitview"); });
+    if (!sdlCls) return nil;
+    if ([root isKindOfClass:sdlCls]) return root;
+    for (UIView *sub in root.subviews) {
+        UIView *found = findSDL_uikitview(sub);
+        if (found) return found;
+    }
+    return nil;
+}
+
+#pragma mark - SDL3 渲染层（MC 26.3+ OpenGL 后端黑屏修复）
+
+// libSDL3 的嵌入逻辑（Amethyst_EmbedSDLViewIntoHostWindow）在把 SDL 视图挂进
+// 启动器层级时，会执行 gameSurface.hidden = YES —— gameSurface 就是从
+// rootViewController 往下找到的第一个 GameSurfaceView，也就是 self.surfaceView
+// （= pojavWindow = +[SurfaceViewController surface]）。
+//
+// 这对 Vulkan 后端是正确的（它走 SDL 自带的 metalview 呈现），但对 OpenGL 后端
+// 是致命的：gl_bridge 的 gl_init_context() 把 EGL surface 绑在
+// SurfaceViewController.surface.layer 上，宿主 view 一隐藏，ANGLE 渲染出来的画面
+// 就无处呈现 —— 表现为画面全黑，而输入、声音、资源加载全部正常。
+//
+// 下面两个函数供 gl_bridge 在建 EGL surface 前调用。它们都只在能找到
+// SDL_uikitview 时才动作，因此 GLFW 路径（1.21.1 及更低版本）完全不受影响：
+// 那里根本没有 SDL 视图，函数直接返回 NO / nil，gl_bridge 沿用原逻辑。
+
+// 找到当前嵌入的 SDL 视图；非 SDL3 路径返回 nil。
+static UIView *Amethyst_FindSDLView(void) {
+    UIWindow *host = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (scene.activationState != UISceneActivationStateForegroundActive ||
+                ![scene isKindOfClass:UIWindowScene.class]) {
+                continue;
+            }
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                if (!w.hidden && w.rootViewController != nil) { host = w; break; }
+            }
+            if (host) break;
+        }
+    }
+    if (!host) host = UIApplication.sharedApplication.keyWindow;
+
+    UIView *root = host.rootViewController.view;
+    if (!root && pojavWindow != nil) root = pojavWindow.window.rootViewController.view;
+    if (!root) return nil;
+    return findSDL_uikitview(root);
+}
+
+// 供 egl_bridge 的呈现层卫兵使用（Amethyst_FindSDLView 是文件内 static）。
+// 非 SDL3 路径返回 nil。
+UIView *Amethyst_FindEmbeddedSDLView(void) {
+    return Amethyst_FindSDLView();
+}
+
+#pragma mark - SDL3 黑屏：让 SDL 嵌入视图透明
+
+// 现象：输入、声音、资源加载与渲染全部正常（MG 甚至打出 First frame
+// rendered），但屏幕全黑；且调整分辨率无效 —— 因为分辨率既改不了 z 序，
+// 也改不了不透明。
+//
+// 成因：SDL3 的嵌入逻辑（预编译 libSDL3.dylib 内）在每次真实
+// SDL_CreateWindow 后把自己 re-front 到最前（日志 "ShowWindow: re-fronting
+// embedded view"）。该视图内部的 SDL_uikitmetalview 的 CAMetalLayer 默认
+// opaque=1，于是一整块不透明黑层盖在 GameSurfaceView 之上。
+//
+// Air（Task 52）把这层设成透明，前提是它能从源码构建 SDL。本仓库不能改
+// SDL 源码，但可以在运行时拿到这个 UIView 实例直接设属性 —— 改不了源码
+// 不等于改不了实例。
+//
+// 刻意不做的事：
+//   * 不动 alpha（保持触摸命中，SDL 视图在最前正是输入正常的原因）；
+//   * 不重排 z 序（周期性 bringSubviewToFront 会盖住虚拟鼠标与控制按钮）。
+// 只处理根视图与 CAMetalLayer 子视图，避免误伤 SDL 的文本输入等子视图。
+
+// 回退开关：AMETHYST_KEEP_SDL_METAL=1 时保留 SDL 的金属子层（仅透明化，
+// 不隐藏）。默认隐藏 —— EGL 路径下真正的呈现面是 GameSurfaceView 的
+// CAMetalLayer，SDL 的金属层不是渲染目标，留着只会整块盖住画面。
+static BOOL ame_keepSDLMetalLayer(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("AMETHYST_KEEP_SDL_METAL");
+        cached = (e != NULL && atoi(e) == 1) ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+static BOOL ame_applyTransparentRecursive(UIView *v, BOOL isRoot) {
+    if (v == nil) return NO;
+    BOOL changed = NO;
+    BOOL isMetal = [v.layer isKindOfClass:CAMetalLayer.class];
+    if (isRoot || isMetal) {
+        if (v.opaque) { v.opaque = NO; changed = YES; }
+        if (v.layer.opaque) { v.layer.opaque = NO; changed = YES; }
+        if (v.backgroundColor != nil &&
+            CGColorGetAlpha(v.backgroundColor.CGColor) > 0.0) {
+            v.backgroundColor = UIColor.clearColor;
+            changed = YES;
+        }
+    }
+    // 预编译 libSDL3.dylib 在 SDL 视图内额外建了 SDL_uikitmetalview 子层
+    //（Air 从源码构建 SDL3，不存在这层）。它的 CAMetalLayer 默认 opaque=1
+    // 且 drawableSize 为全屏像素：即便把 opaque 置 NO，只要有内容仍会整块
+    // 盖住画面。EGL 路径下它不是渲染目标，直接移出合成最稳妥（可用
+    // AMETHYST_KEEP_SDL_METAL=1 回退为仅透明化）。
+    if (isMetal && !isRoot && !ame_keepSDLMetalLayer()) {
+        if (!v.hidden) { v.hidden = YES; changed = YES; }
+    }
+    for (UIView *sub in v.subviews) {
+        if (ame_applyTransparentRecursive(sub, NO)) changed = YES;
+    }
+    return changed;
+}
+
+BOOL Amethyst_MakeSDLRenderTransparent(void) {
+    UIView *sdl = Amethyst_FindSDLView();
+    if (sdl == nil) return NO;                 // 非 SDL3 路径：不改动任何状态
+    return ame_applyTransparentRecursive(sdl, YES);
+}
+
+// Air Task 32（黑屏根治）+ Task 52（呈现面被隐藏的根治）。
+//
+// 黑屏的两个遮挡源，缺一不可：
+//   (a) SDL 自己的 UIWindow：原生 SDL3 的 UIKit_ShowWindow 会对它
+//       makeKeyAndVisible。它是一个独立的 UIWindow，浮在整个宿主窗口之上——
+//       touchView 内部的 z 序再怎么排也救不了。Air 原话：“原生
+//       makeKeyAndVisible 的空窗口会盖住 GameSurfaceView = 黑屏”。
+//   (b) 供应商 libSDL3.dylib 的 Zalith 同源嵌入补丁（反汇编实锤 @0x152e6c）
+//       按类名找到 GameSurfaceView 并执行 [GameSurfaceView setHidden:YES]
+//       （Zalith 架构里 SDL 的 metal view 才是渲染目标）。但本启动器 GL 与
+//       Vulkan 的渲染目标恰恰是 GameSurfaceView 的 CAMetalLayer：帧全部呈现
+//       进一个被隐藏的 layer = 渲染指标全绿 + 永久黑屏。该 NSLog 是真 NSLog，
+//       在 latestlog 里完全不可见，所以此前无从察觉。
+//
+// 必须周期性重跑：每次真实 SDL_CreateWindow / SDL_ShowWindow 都可能复发。
+// 一次性诊断：把「谁在谁上面」完整 dump 出来。
+// 黑屏已反复猜测多轮，这里把决定性事实一次打全：
+//   * 所有 UIWindow（含 SDL 自建空窗 —— 空窗浮在宿主之上就是整块黑盖子）
+//   * 呈现面 GameSurfaceView 与 SDL 嵌入视图的可见性 / 不透明 / 几何 / z 序
+// 只在检测到异常时打印，且总预算有限，避免高频执法刷屏。
+static void ame_dumpPresentationState(const char *reason) {
+    static int budget = 6;
+    if (budget <= 0) return;
+    budget--;
+
+    NSMutableString *m = [NSMutableString string];
+    [m appendFormat:@"[Amethyst][diag] presentation dump (%s)\n", reason];
+
+    NSArray *wins = [UIApplication sharedApplication].windows;
+    [m appendFormat:@"  windows=%lu\n", (unsigned long)wins.count];
+    for (UIWindow *w in wins) {
+        [m appendFormat:@"    win=%@ rc=%@ hidden=%d level=%.0f key=%d frame=%@\n",
+            NSStringFromClass(w.class),
+            w.rootViewController ? NSStringFromClass(w.rootViewController.class) : @"(nil)",
+            (int)w.hidden, w.windowLevel, (int)w.isKeyWindow,
+            NSStringFromCGRect(w.frame)];
+    }
+
+    UIView *gs = pojavWindow;
+    if (gs) {
+        CALayer *l = gs.layer;
+        NSString *ds = @"(n/a)";
+        if ([l isKindOfClass:CAMetalLayer.class]) {
+            CGSize sz = ((CAMetalLayer *)l).drawableSize;
+            ds = [NSString stringWithFormat:@"%.0fx%.0f", sz.width, sz.height];
+        }
+        [m appendFormat:@"  gameSurface=%@ hidden=%d layerHidden=%d layer=%@ layerOpaque=%d "
+                        @"scale=%.2f drawable=%@ frame=%@ window=%@\n",
+            NSStringFromClass(gs.class), (int)gs.hidden, (int)l.hidden,
+            NSStringFromClass(l.class), (int)l.opaque, l.contentsScale, ds,
+            NSStringFromCGRect(gs.frame),
+            gs.window ? NSStringFromClass(gs.window.class) : @"(nil)"];
+    } else {
+        [m appendString:@"  gameSurface=(nil)\n"];
+    }
+
+    UIView *sdl = Amethyst_FindSDLView();
+    if (sdl) {
+        CALayer *l = sdl.layer;
+        NSString *ds = @"(n/a)";
+        if ([l isKindOfClass:CAMetalLayer.class]) {
+            CGSize sz = ((CAMetalLayer *)l).drawableSize;
+            ds = [NSString stringWithFormat:@"%.0fx%.0f", sz.width, sz.height];
+        }
+        [m appendFormat:@"  sdlView=%@ hidden=%d opaque=%d layer=%@ layerOpaque=%d "
+                        @"scale=%.2f drawable=%@ frame=%@ window=%@\n",
+            NSStringFromClass(sdl.class), (int)sdl.hidden, (int)sdl.opaque,
+            NSStringFromClass(l.class), (int)l.opaque, l.contentsScale, ds,
+            NSStringFromCGRect(sdl.frame),
+            sdl.window ? NSStringFromClass(sdl.window.class) : @"(nil)"];
+    } else {
+        [m appendString:@"  sdlView=(not found)\n"];
+    }
+
+    UIView *container = gs ? gs.superview : nil;
+    if (container) {
+        NSMutableArray *order = [NSMutableArray array];
+        for (UIView *v in container.subviews) {
+            [order addObject:[NSString stringWithFormat:@"%@(h=%d,op=%d,lo=%d)",
+                NSStringFromClass(v.class), (int)v.hidden, (int)v.opaque, (int)v.layer.opaque]];
+        }
+        [m appendFormat:@"  container=%@ subviews(bottom->top)=%@\n",
+            NSStringFromClass(container.class),
+            [order componentsJoinedByString:@" | "]];
+    }
+    NSLog(@"%@", m);
+}
+
+// Air Task 32（空窗黑盖子）+ Task 52（呈现面被隐藏）+ SDL 层不透明。
+//
+// 三个遮挡源，任何一处漏掉都还是黑：
+//   (a) SDL 自建 UIWindow：原生 UIKit_ShowWindow 会对它 makeKeyAndVisible。
+//       它是独立 UIWindow，浮在整个宿主窗口之上 —— touchView 内部 z 序再怎么
+//       排都救不了。每次真实建窗都会重演，故必须周期性执法。
+//   (b) 供应商 libSDL3.dylib 的 Zalith 同源嵌入补丁按类名找到 GameSurfaceView
+//       并 setHidden:YES。但 GL/Vulkan 的真正呈现面正是它的 CAMetalLayer。
+//   (c) SDL 嵌入视图的 CAMetalLayer 默认 opaque=1，整块盖住画面。
+//
+// 安全保障（不引入新 bug 的优先级高于修好黑屏）：
+//   * 只在确认存在另一个可见宿主 window 时才隐藏 SDL window —— 绝不把
+//     唯一可见窗口藏掉；
+//   * z 序调整前先确认 SDL 的 layer 已真正透明，否则宁可维持现状
+//     （画面层在上）也不下压 —— 下压到不透明层下面只会更黑；
+//   * 全程 @try，任何异常都吞掉并记录，不影响游戏进程。
+BOOL Amethyst_EnforceSDL3Presentation(void) {
+    if (pojavWindow == nil) return NO;
+    UIView *gs = pojavWindow;
+    UIView *sdlView = Amethyst_FindSDLView();
+    UIView *container = gs.superview;
+    if (container == nil) return NO;
+
+    @try {
+        BOOL fixed = NO;
+
+        // 1) SDL 自建 UIWindow 永远隐藏，并把 key window 还给宿主。
+        //    安全条件：必须存在另一个可见的、非 SDL 的 window 才动手。
+        NSArray *allWindows = [UIApplication sharedApplication].windows;
+        for (UIWindow *w in allWindows) {
+            UIViewController *rc = w.rootViewController;
+            if (rc == nil) continue;
+            if ([NSStringFromClass(rc.class) rangeOfString:@"SDL_uikitviewcontroller"]
+                    .location == NSNotFound) continue;
+            if (w.hidden) continue;
+
+            // 安全：确认有替身 host window 可见，且该 host 不是 SDL 自己的
+            UIWindow *hostWin = nil;
+            for (UIWindow *w2 in allWindows) {
+                if (w2 == w || w2.hidden || w2.rootViewController == nil) continue;
+                if ([NSStringFromClass(w2.rootViewController.class) rangeOfString:
+                        @"SDL_uikitviewcontroller"].location != NSNotFound) continue;
+                hostWin = w2;
+                break;
+            }
+            if (hostWin == nil) {
+                ame_dumpPresentationState("SDL window found but NO host window to fall back");
+                continue;   // 绝不把唯一可见窗口藏掉
+            }
+
+            w.hidden = YES;
+            [hostWin makeKeyWindow];
+            fixed = YES;
+            NSLog(@"[Amethyst] Task32: SDL UIWindow re-hidden (empty key+visible window "
+                  @"covers GameSurfaceView = black screen); host key window restored");
+            ame_dumpPresentationState("SDL own UIWindow was visible (black cover)");
+        }
+
+        // 2) 揭开真正的渲染呈现面。
+        if (gs.hidden || gs.layer.hidden) {
+            gs.hidden = NO;
+            gs.layer.hidden = NO;
+            fixed = YES;
+            NSLog(@"[Amethyst] Task52: GameSurfaceView was HIDDEN by SDL provider embed "
+                  @"patch -- UN-HIDDEN (it is our render target)");
+            ame_dumpPresentationState("GameSurfaceView was hidden");
+        }
+
+        // 3) Air Task 52 原样（参考仓库 Natives/sdl3_hook.m:1050-1051）：
+        //    sdlView.backgroundColor = nil; sdlView.opaque = NO;
+        //    上一版误判「Air 全仓库不存在透明化代码」，据此把透明化删掉、只留
+        //    z 序下压 —— 画面被压到 opaque=1 的全屏金属层之下，等于亲手制造
+        //    黑屏。Air 的透明化确实存在（在 sdl3_hook.m 而非 gl_bridge.m），
+        //    此处按原样恢复。
+        if (sdlView != nil) {
+            if (sdlView.opaque) { sdlView.opaque = NO; fixed = YES; }
+            if (sdlView.layer.opaque) { sdlView.layer.opaque = NO; fixed = YES; }
+            if (sdlView.backgroundColor != nil) {
+                sdlView.backgroundColor = nil;
+                fixed = YES;
+            }
+            // 递归处理预编译 SDL 额外建出的金属子层（并令其退出合成）。
+            if (Amethyst_MakeSDLRenderTransparent()) fixed = YES;
+        }
+
+        // 4. z 序终局（Air Task 52 原样）：其它子视图（虚拟鼠标指针、控制按钮）
+        //    压回 SDL 视图之上，GameSurfaceView 紧贴 SDL 触摸视图之下 ——
+        //    画面在下、触摸层在上，靠 SDL 视图透明透出画面。
+        if (sdlView != nil && sdlView.superview == container) {
+            for (UIView *sub in [container.subviews copy]) {
+                if (sub != sdlView && sub != gs) [container bringSubviewToFront:sub];
+            }
+            NSArray *subs = container.subviews;
+            NSUInteger gi = [subs indexOfObjectIdenticalTo:gs];
+            NSUInteger si = [subs indexOfObjectIdenticalTo:sdlView];
+            if (gi != NSNotFound && si != NSNotFound && gi > si) {
+                [container insertSubview:gs belowSubview:sdlView];
+                NSLog(@"[Amethyst] Task52: GameSurfaceView pinned BELOW SDL touch view "
+                      @"(Air Task52: SDL view transparent, frame shows through)");
+            }
+        }
+
+        return fixed;
+    } @catch (NSException *e) {
+        NSLog(@"[Amethyst] Task32/52 enforcement exception: %@", e);
+        return NO;
+    }
+}
+
+// 补救方式 (1)（默认）：保持 EGL 绑在 GameSurfaceView 上，仅取消隐藏。
+// 分辨率沿用启动器配置的 drawableSize / contentsScale。
+// z 序 / SDL 自有 UIWindow 交由 Amethyst_EnforceSDL3Presentation 按 Air 排布处理。
+// 返回 YES 表示确实执行了补救（即当前是 SDL3 路径）。
+BOOL Amethyst_RestoreGameSurfaceVisibility(void) {
+    if (pojavWindow == nil) return NO;
+    UIView *sdlView = Amethyst_FindSDLView();
+    if (!sdlView) return NO;                 // 非 SDL3 路径：不改动任何状态
+    UIView *container = pojavWindow.superview;
+    if (!container) return NO;
+
+    pojavWindow.hidden = NO;
+    // 不再 bringSubviewToFront：Air 的排布是画面层紧贴 SDL 触摸视图「之下」，
+    // 由 Amethyst_EnforceSDL3Presentation 统一执法（SDL 视图已透明）。
+
+    // SDL 嵌入后宿主 view 的 frame 可能被改写/缩小，使其只占屏幕一角，画面于是
+    // 缩在左下角并伴随大面积黑边。按启动器已算好的 windowWidth/Height 反推 frame：
+    //     windowWidth  = frame.width * screenScale * resolutionScale
+    //     contentsScale = screenScale * resolutionScale
+    //   => frame.width  = windowWidth / contentsScale
+    // 该结果恒等于全屏逻辑尺寸（与分辨率缩放无关），因此无论用户把分辨率设为
+    // 多少，view 都铺满屏幕，缩放只体现在渲染像素数上。
+    CGFloat hostScale = pojavWindow.layer.contentsScale;
+    if (hostScale > 0.0 && windowWidth > 0 && windowHeight > 0) {
+        CGSize want = CGSizeMake((CGFloat)windowWidth / hostScale,
+                                 (CGFloat)windowHeight / hostScale);
+        CGSize cur = pojavWindow.bounds.size;
+        if (fabs(cur.width - want.width) > 1.0 || fabs(cur.height - want.height) > 1.0) {
+            CGRect f = pojavWindow.frame;
+            f.size = want;
+            pojavWindow.frame = f;
+            NSLog(@"[SurfaceVC] SDL3 path: GameSurfaceView frame corrected "
+                  @"%.0fx%.0f -> %.0fx%.0f (scale %.2f -> surface %.0fx%.0f, "
+                  @"drawableSize %dx%d)",
+                  cur.width, cur.height, want.width, want.height, hostScale,
+                  want.width * hostScale, want.height * hostScale,
+                  windowWidth, windowHeight);
+        }
+    }
+
+    // 关键：hidden 期间 UIKit 可能跳过了布局，bounds 仍为 0。
+    // gl_bridge 用 layer.bounds * contentsScale 推算 EGLSurface 像素尺寸，
+    // bounds 为 0 会建出 1x1 的 surface（画面全黑且不可自愈，因为 surface
+    // 只创建一次）。这里强制补一次布局，让 gl_bridge 取到真实尺寸。
+    [pojavWindow setNeedsLayout];
+    [pojavWindow layoutIfNeeded];
+    [container setNeedsLayout];
+    [container layoutIfNeeded];
+
+    CGSize bs = pojavWindow.bounds.size;
+    CGFloat scale = pojavWindow.layer.contentsScale;
+    NSLog(@"[SurfaceVC] SDL3 path: GameSurfaceView unhidden "
+          @"(bounds=%.0fx%.0f scale=%.2f -> px %.0fx%.0f)",
+          bs.width, bs.height, scale, bs.width * scale, bs.height * scale);
+    if (bs.width < 1.0 || bs.height < 1.0) {
+        NSLog(@"[SurfaceVC] WARNING: GameSurfaceView bounds still zero after layout; "
+              @"gl_bridge will fall back to drawableSize/screen");
+    }
+    // 隐藏 SDL 自有 UIWindow + 揭开渲染层 + SDL 视图透明 + z 序钉扎（Air Task 32/52）
+    (void)Amethyst_EnforceSDL3Presentation();
+    return YES;
+}
+
+// 补救方式 (2)（AMETHYST_EGL_SURFACE_LAYER=sdl）：直接给出 SDL 自己的可见
+// CAMetalLayer，让 EGL surface 绑到它上面。非 SDL3 路径返回 nil。
+CALayer *Amethyst_SDL3RenderLayer(void) {
+    UIView *sdlView = Amethyst_FindSDLView();
+    if (!sdlView) return nil;
+    // SDL 的实际呈现层是嵌在 SDL_uikitview 里的 SDL_uikitmetalview
+    Class metalCls = NSClassFromString(@"SDL_uikitmetalview");
+    if (metalCls) {
+        for (UIView *sub in sdlView.subviews) {
+            if ([sub isKindOfClass:metalCls]) {
+                return sub.layer;
+            }
+        }
+    }
+    return sdlView.layer;
+}
+
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event
 {
 
@@ -2231,7 +3275,41 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
 
 
     for (UITouch *touch in touches) {
-        if (touch.type == UITouchTypeIndirectPointer) continue;
+        // ★ [BT-MOUSE] 间接指针(蓝牙鼠标/触控板)：接住并按 UIEventButtonMask 合成鼠标按键。
+        if (touch.type == UITouchTypeIndirectPointer) {
+            // ★ [BT-MOUSE-DIAG] 过滤前原始取证（节流）。
+            {
+                CGPoint rawP = [touch locationInView:self.rootView];
+                self.btRawTouchCount++;
+                if (self.btRawTouchCount <= 20 || self.btRawTouchCount % 20 == 0) {
+                    NSLog(@"[BT-MOUSE][raw] indirectPointer #%lu: phase=began buttonMask=0x%lx loc=(%.0f,%.0f) gcMouse=%lu handle=%d grabbed=%d enable=%d",
+                          (unsigned long)self.btRawTouchCount, (unsigned long)event.buttonMask,
+                          rawP.x, rawP.y, (unsigned long)GCMouse.mice.count, [self btPointerShouldHandle],
+                          isGrabbing, getPrefBool(@"control.bt_pointer_enable"));
+                }
+            }
+            if (!self.btPointerTouchLogged) {
+                self.btPointerTouchLogged = YES;
+                NSLog(@"[BT-MOUSE] 检测到间接指针 touches: buttonMask=0x%lx GCMouse=%lu grabbing=%d enable=%d handle=%d",
+                      (unsigned long)event.buttonMask, (unsigned long)GCMouse.mice.count,
+                      isGrabbing, getPrefBool(@"control.bt_pointer_enable"), [self btPointerShouldHandle]);
+            }
+            if ([self btPointerShouldHandle]) {
+                CGPoint p = [touch locationInView:self.rootView];
+                self.btPointerLastPoint = p;
+                if (isGrabbing != JNI_TRUE) {
+                    // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+                    [self btRawLogSend:@"downAbs" dx:p.x dy:p.y btn:-1];
+                    [self sendTouchPoint:p withEvent:ACTION_DOWN];
+                }
+                NSUInteger mask = (NSUInteger)event.buttonMask;
+                if (mask == 0) mask = UIEventButtonMaskPrimary;   // 无掩码时兜底左键
+                self.btPointerDownMask = mask;
+                self.btPointerDown = YES;
+                [self btPointerApplyButtonMask:mask pressed:YES fallbackLeft:NO];
+            }
+            continue;
+        }
         CGPoint locationInView = [touch locationInView:self.rootView];
         CGFloat screenScale = [[UIScreen mainScreen] scale];
         currentHotbarSlot = self.enableHotbarGestures ?
@@ -2244,6 +3322,10 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
         }
         [self sendTouchEvent:touch withUIEvent:event withEvent:ACTION_DOWN];
     }
+    // NOTE: Touches are NOT forwarded to SDL_uikitview here.
+    // Our input_bridge_v3.m handles all mouse injection via SDL_PushEvent.
+    // Forwarding to SDL_uikitview would cause duplicate SDL_FINGER + mouse events
+    // (SDL internally converts touch→mouse), resulting in hitbox mismatch.
 }
 
 - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event
@@ -2280,7 +3362,30 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
 
     for (UITouch *touch in touches) {
         if (touch.type == UITouchTypeIndirectPointer) {
-            if (!isGrabbing && !virtualMouseEnabled) {
+            // ★ [BT-MOUSE-DIAG] 过滤前原始取证（节流）。
+            {
+                CGPoint rawP = [touch locationInView:self.rootView];
+                self.btRawTouchCount++;
+                if (self.btRawTouchCount <= 20 || self.btRawTouchCount % 20 == 0) {
+                    NSLog(@"[BT-MOUSE][raw] indirectPointer #%lu: phase=moved buttonMask=0x%lx loc=(%.0f,%.0f) gcMouse=%lu handle=%d down=%d grabbed=%d",
+                          (unsigned long)self.btRawTouchCount, (unsigned long)event.buttonMask,
+                          rawP.x, rawP.y, (unsigned long)GCMouse.mice.count, [self btPointerShouldHandle],
+                          self.btPointerDown, isGrabbing);
+                }
+            }
+            // ★ [BT-MOUSE] 间接指针移动：按键按住时转相对位移(游戏内转视角)，
+            //   否则维持旧行为(未抓取且未开虚拟鼠标时用绝对位置移动光标)。
+            if ([self btPointerShouldHandle]) {
+                CGPoint p = [touch locationInView:self.rootView];
+                if (self.btPointerDown) {
+                    [self btPointerMoveToPoint:p grabbing:(isGrabbing == JNI_TRUE)];
+                } else if (!isGrabbing && !virtualMouseEnabled) {
+                    // ★ [BT-MOUSE-DIAG] 通道2 发送前取证。
+                    [self btRawLogSend:@"moveAbs" dx:p.x dy:p.y btn:-1];
+                    [self sendTouchPoint:p withEvent:ACTION_MOVE];
+                }
+                self.btPointerLastPoint = p;
+            } else if (!isGrabbing && !virtualMouseEnabled) {
                 CGPoint point = [touch locationInView:self.rootView];
                 [self sendTouchPoint:point withEvent:ACTION_MOVE];
             }
@@ -2296,6 +3401,24 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
 
 - (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event
 {
+    // ★ [BT-MOUSE] 间接指针按键抬起：必须在任何 early-return 之前处理，
+    //   否则游戏内(mod_touch 开启 + 抓取时提前 return)会漏掉 mouse-up → 按键卡住。
+    for (UITouch *touch in touches) {
+        if (touch.type == UITouchTypeIndirectPointer) {
+            // ★ [BT-MOUSE-DIAG] 过滤前原始取证（节流）。
+            {
+                CGPoint rawP = [touch locationInView:self.rootView];
+                self.btRawTouchCount++;
+                if (self.btRawTouchCount <= 20 || self.btRawTouchCount % 20 == 0) {
+                    NSLog(@"[BT-MOUSE][raw] indirectPointer #%lu: phase=ended buttonMask=0x%lx loc=(%.0f,%.0f) down=%d grabbed=%d",
+                          (unsigned long)self.btRawTouchCount, (unsigned long)event.buttonMask,
+                          rawP.x, rawP.y, self.btPointerDown, isGrabbing);
+                }
+            }
+            [self btPointerHandleEndedTouch:touch];
+        }
+    }
+
     if (getPrefBool(@"control.mod_touch_enable")) {
         NSInteger mode = [getPrefObject(@"control.mod_touch_mode") integerValue];
 
@@ -2325,6 +3448,23 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
 
 - (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event
 {
+    // ★ [BT-MOUSE] 间接指针被取消：同样在任何 early-return 之前释放按键，避免卡住。
+    for (UITouch *touch in touches) {
+        if (touch.type == UITouchTypeIndirectPointer) {
+            // ★ [BT-MOUSE-DIAG] 过滤前原始取证（节流）。
+            {
+                CGPoint rawP = [touch locationInView:self.rootView];
+                self.btRawTouchCount++;
+                if (self.btRawTouchCount <= 20 || self.btRawTouchCount % 20 == 0) {
+                    NSLog(@"[BT-MOUSE][raw] indirectPointer #%lu: phase=cancelled buttonMask=0x%lx loc=(%.0f,%.0f) down=%d grabbed=%d",
+                          (unsigned long)self.btRawTouchCount, (unsigned long)event.buttonMask,
+                          rawP.x, rawP.y, self.btPointerDown, isGrabbing);
+                }
+            }
+            [self btPointerHandleEndedTouch:touch];
+        }
+    }
+
     if (getPrefBool(@"control.mod_touch_enable")) {
         NSInteger mode = [getPrefObject(@"control.mod_touch_mode") integerValue];
 
@@ -2430,6 +3570,8 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
 
     // 清理启动遮罩层资源
     [[NSNotificationCenter defaultCenter] removeObserver:self name:@"PojavFirstFrameRendered" object:nil];
+    // ★ [LAUNCH-PROGRESS] 一并移除阶段广播观察者(与上面同一处清理)
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:AmeLaunchProgressChangedNotification object:nil];
     self.launchOverlayView = nil;
     self.launchGradientLayer = nil;
 
@@ -2461,8 +3603,17 @@ static NSMutableDictionary *s_touchToFingerIdMap = nil;
     }
 
     // LAN 端口检测器已改为手动输入模式，stopDetecting 已移除，无需调用。
-    // ZeroTier/Terracotta 联机暂时移除：原 stopAllMultiplayerServices 调用注释掉
-    // [[MultiplayerManager sharedManager] stopAllMultiplayerServices];
+
+    // ★ [MP-RESTORE] 联机恢复：游戏退出（存档关闭/JVM 结束）时清理联机资源
+    // 原代码仅停止 LanPortDetector，不清理 SOCKS5 代理 / PortForwarder / ZeroTier 网络 /
+    // AMETHYST_SOCKS5_PROXY 环境变量 / PLProfiles.serverIp ⇒ "存档关闭后端口仍在""下次进游戏仍显示连接服务器"。
+    // dealloc 可能在异常路径触发，用 @try/@catch 防二次崩溃。
+    @try {
+        [[MultiplayerManager sharedManager] stopAllMultiplayerServices];
+        NSLog(@"[SurfaceViewController] dealloc: Multiplayer resources cleaned up");
+    } @catch (NSException *e) {
+        NSLog(@"[SurfaceViewController] dealloc: Exception while cleaning up multiplayer resources: %@", e);
+    }
 
     //æ¸ç TouchController èµæº
     if (self.touchControllerTransportHandle >= 0) {

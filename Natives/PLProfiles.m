@@ -54,6 +54,9 @@ static PLProfiles* current;
 
     NSDictionary *valueDefaults = @{
         @"javaVersion": @"0",
+        // LWJGL 版本："auto" = MC 26.x 及以上用 3.4.1，其余用 3.3.3。
+        // profile 里显式存 "333"/"341" 时以显式值为准。
+        @"lwjglVersion": @"auto",
         @"gameDir": @"."
     };
     if (valueDefaults[key]) {
@@ -84,69 +87,8 @@ static PLProfiles* current;
         self.profileDict = PLProfiles.defaultProfiles;
         [self save];
     }
-    // 自愈补丁：自动补齐缺失的版本 profile（解决 Forge 等加载器安装收尾崩溃后版本不显示）
-    [self autoAddMissingVersionProfiles];
 
     return self;
-}
-
-/// 自愈补丁：扫描 versions/ 目录，为有版本 json 但没有 profile 的版本自动补上 profile。
-/// 解决 Forge 等加载器版本安装时收尾崩溃（JVM 退出带崩 app）导致 launcher_profiles.json
-/// 未写入的问题——只要版本 json 已落盘，重开启动器即可自动出现在版本列表，无需手动补。
-- (void)autoAddMissingVersionProfiles {
-    NSString *gameDir = @(getenv("POJAV_GAME_DIR"));
-    NSString *versionsDir = [gameDir stringByAppendingPathComponent:@"versions"];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:versionsDir]) {
-        return;
-    }
-
-    NSArray *entries = [fm contentsOfDirectoryAtPath:versionsDir error:nil];
-    NSMutableDictionary *profiles = [self profiles];  // 经 getter 保证为可变字典
-    BOOL changed = NO;
-
-    for (NSString *entry in entries) {
-        NSString *versionPath = [versionsDir stringByAppendingPathComponent:entry];
-        BOOL isDir = NO;
-        if (![fm fileExistsAtPath:versionPath isDirectory:&isDir] || !isDir) {
-            continue;
-        }
-        // 目录里必须有对应的版本 json 才算有效版本
-        NSString *jsonPath = [versionPath stringByAppendingPathComponent:[entry stringByAppendingPathExtension:@"json"]];
-        if (![fm fileExistsAtPath:jsonPath]) {
-            continue;
-        }
-
-        // 已有对应 profile 则跳过
-        BOOL exists = NO;
-        for (NSString *name in profiles) {
-            if ([[profiles[name][@"lastVersionId"] description] isEqualToString:entry]) {
-                exists = YES;
-                break;
-            }
-        }
-        if (exists) {
-            continue;
-        }
-
-        // 自动补 profile（显示名美化：1.20.1-forge-47.1.39 → Forge 1.20.1）
-        NSString *displayName = entry;
-        if ([entry containsString:@"-forge-"]) {
-            NSString *mcVer = [entry componentsSeparatedByString:@"-forge-"].firstObject;
-            displayName = [NSString stringWithFormat:@"Forge %@", mcVer];
-        }
-        profiles[displayName] = [@{
-            @"name": displayName,
-            @"lastVersionId": entry,
-            @"gameDir": @"."
-        } mutableCopy];
-        NSLog(@"[PLProfiles] Self-healing: auto-added profile \"%@\" for version %@", displayName, entry);
-        changed = YES;
-    }
-
-    if (changed) {
-        [self save];
-    }
 }
 
 - (id)profiles {

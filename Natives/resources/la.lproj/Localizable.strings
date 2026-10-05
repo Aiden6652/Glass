@@ -1,13 +1,3 @@
 "game.menu.log_output" = "Log output";
 "custom_controls.control_menu.exit" = "Exitus";
 "login.option.select" = "Ob selectos";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Failed to install vanilla %@.\n\n%@ was not installed. Please check your network and try again.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Stylus vitri";
-"i18n_str_2069" = "Clausum";
-"i18n_str_2070" = "Standardum";
-"i18n_str_2071" = "Fortis";
-"i18n_str_2072" = "Vitrum liquidum";

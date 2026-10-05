@@ -13,6 +13,7 @@
 
 #import "GlassTheme.h"
 #import "LauncherPreferences.h"
+#import "utils.h"   // localize()
 
 @implementation GlassTheme
 

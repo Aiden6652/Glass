@@ -282,13 +282,3 @@
 "controller_configurator.section.footer.menu_mappings" = "Mapování při odemčené myši, například na titulní obrazovce či v nabídce pozastavení.";
 "controller_configurator.section.controller_style" = "Typ ovladače";
 "controller_configurator.section.footer.controller_style" = "Ukázat odlišné názvy tlačítek ovladače v tomto nastavení.";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "Failed to install vanilla %@.\n\n%@ was not installed. Please check your network and try again.";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "Styl skla";
-"i18n_str_2069" = "Vypnuto";
-"i18n_str_2070" = "Standard";
-"i18n_str_2071" = "Silný";
-"i18n_str_2072" = "Tekuté sklo";

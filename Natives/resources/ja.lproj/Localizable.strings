@@ -201,6 +201,7 @@
 "preference.detail.modLoaderSource" = "Fabric / Forge / NeoForge 的 meta、maven 与安装器下载策略。镜像优先使用 BMCLAPI 镜像。";
 "preference.title.mirror_policy-official_first" = "官方优先";
 "preference.title.mirror_policy-mirror_first" = "镜像优先";
+"preference.title.mirror_policy-auto" = "自动（大陆镜像优先）";
 "preference.title.mod_mirror" = "模组镜像源";
 "preference.detail.mod_mirror" = "选择模组/光影/资源包/数据包/整合包/世界的 API 与文件下载镜像源。MCIM镜像源（mod.mcimirror.top）提供国内加速，兼容 Modrinth 和 CurseForge 接口。";
 "preference.title.mod_mirror-official" = "官方源";
@@ -311,6 +312,8 @@
 "preference.detail.recording_hide" = "在截图和屏幕录制时隐藏控制，但它们仍然在屏幕上可见。";
 "preference.title.gesture_mouse" = "鼠标手势";
 "preference.detail.gesture_mouse" = "启用手势，例如点击放置方块、按住破坏方块、用两根手指转动视角";
+"preference.title.bt_pointer_enable" = "蓝牙鼠标 / 触控板";
+"preference.detail.bt_pointer_enable" = "Bluetooth マウス／トラックパッドを実際のポインタとして使います（移動／左クリック／右クリック）。GameController がマウスを報告していない場合のみ有効になるため、タッチやハードウェアマウスと競合しません。iPhone では先に「設定 → アクセシビリティ → タッチ → AssistiveTouch → ポインタデバイス」を有効にしてください。iPad はそのまま使えます。";
 "preference.title.gesture_hotbar" = "快捷栏手势";
 "preference.detail.gesture_hotbar" = "启用手势，例如点击快捷栏物品槽、双手交换物品、丢弃物品";
 "preference.title.disable_haptics" = "禁用屏幕触觉反馈";
@@ -651,6 +654,14 @@
 "launch.cancel_confirm_message" = "取消启动将终止当前的游戏加载流程并返回启动器。";
 "launch.cancel_confirm_yes" = "确认取消";
 "launch.cancel_confirm_no" = "继续等待";
+"launch.progress.stage.prepare_env" = "正在准备环境...";
+"launch.progress.stage.jit_ready" = "正在准备 JIT...";
+"launch.progress.stage.renderer" = "正在解析渲染器与图形 API...";
+"launch.progress.stage.runtime" = "正在加载运行环境(Java / 内存)...";
+"launch.progress.stage.args_ready" = "正在组装启动参数...";
+"launch.progress.stage.jvm_starting" = "正在启动 Java 虚拟机...";
+"launch.progress.stage.waiting_first_frame" = "正在等待游戏画面...";
+"launch.progress.stage.completed" = "启动完成";
 
 // AI Fix Feature
 "ai.fix.conversation" = "对话窗口";
@@ -1954,12 +1965,111 @@
 "preference.auto" = "自动";
 "preference.auto_select" = "自动选择";
 
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "バニラ %@ のインストールに失敗しました。\n\n%@ はインストールされていません。ネットワークを確認して再試行してください。";
+/* ★ [I18N] launcher tab titles / language picker keys (added by I18N fix) */
+"tab.home" = "ホーム";
+"tab.download" = "ダウンロード";
+"tab.ai" = "AI";
+"tab.instances" = "インスタンス";
+"tab.settings" = "設定";
+"preference.lang.title" = "言語";
+"preference.lang.follow_system" = "システムに従う";
+"preference.lang.section.system" = "システム";
+"preference.lang.section.available" = "利用可能な言語";
+"preference.lang.search_placeholder" = "言語を検索";
+"preference.lang.restart_hint.title" = "言語を切り替えました";
+"preference.lang.restart_hint.message" = "選択した言語で画面を再読み込みしました。";
 
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "ガラス質感";
-"i18n_str_2069" = "オフ";
-"i18n_str_2070" = "標準";
-"i18n_str_2071" = "強";
-"i18n_str_2072" = "リキッドガラス";
+
+/* ★ [I18N] key-set alignment vs zh-Hans base; English placeholder pending translation */
+"preference.detail.debug_always_attached_jit" = "Enable this if your mods require loading .dylib at runtime. When this is on, StikDebug's PiP should not be closed during gameplay. Requires Universal Script enabled";
+"preference.detail.tap_click_enable" = "A quick tap sends one full left-click. Turn off to restore the old behavior (in-game tap = right-click/place, long-press = left-click/break).";
+"jit.wait.missing.tool" = "No JIT enabler tool was detected. Install or check %@, or change the JIT enabler in Settings, then try again.";
+"jit.wait.stosdebug" = "Enable JIT for this app with StosDebug, then return to the launcher. Waiting up to 30 seconds…";
+"preference.title.auto_check_update" = "Check for Updates on Launch";
+"preference.title.tap_click_mode-left" = "Always left";
+"preference.detail.tap_click_mode" = "Auto decides by what the crosshair points at: entity/air -> attack (left); interactable block -> use (right); holding a block -> place (right). Left/right always send that button.";
+"preference.detail.tap_click_move" = "A touch that moves less than this counts as a tap; a larger movement still rotates the view.";
+"preference.style.footer.pure" = "System materials only (default): the material is provided entirely by the system (Liquid Glass on iOS 26+) — no hand-drawn glass is added.";
+"preference.title.renderer.debug.vgpu" = "VGPU (<=1.12) - gl4es fork, enhanced shader syntax, EXPERIMENTAL";
+"update_dialog.ignore" = "Ignore this version";
+"preference.title.debug_universal_script_jit" = "Use Universal StikDebug Script";
+"preference.debug.jit_enabler.auto" = "Auto (recommended)";
+"preference.title.tap_click_mode" = "Tap button";
+"jit.wait.sidestore" = "Enable JIT for this app in SideStore / SideJIT, then return to the launcher. Waiting up to 30 seconds…";
+"preference.style.native" = "Native";
+"jit.wait.stikdebug" = "Enable JIT for this app in StikDebug, then return to the launcher. Waiting up to 30 seconds…";
+"preference.style.liquid" = "Liquid Glass";
+"preference.title.tap_click_enable" = "Tap = left click";
+"preference.title.tap_click_move" = "Tap max movement (pt)";
+"preference.title.debug_always_attached_jit" = "Keep attached to StikDebug";
+"preference.title.renderer.debug.mithril" = "Mithril (1.17+) - OpenGL 3.3 Core via Vulkan/Metal, EXPERIMENTAL";
+"preference.detail.jit_enabler" = "Choose the app used to enable JIT. If you don't have StikDebug installed, pick SideStore, StosDebug, JitStreamer-EB or TrollStore instead, otherwise tapping Launch does nothing. Auto (default) tries TrollStore, then StikDebug, then SideStore depending on your device.";
+"jit.wait.jitstreamer" = "Enable JIT for this app through JitStreamer, then return to the launcher. Waiting up to 30 seconds…";
+"jit.timeout_retry_msg" = "Timed out waiting for JIT (120s). The JIT tool may not have responded. Tap Retry to try again, or attach a debugger manually and retry.";
+"preference.style.footer.handdrawn" = "Hand-drawn highlight is on: an extra rim/inner highlight is drawn on top of the system glass (optional).";
+"preference.title.renderer.release.mg" = "MobileGlues";
+"i18n_str_9102" = "Large";
+"preference.title.glass_handdrawn" = "Hand-drawn Highlight";
+"jit.wait.missing.generic" = "No JIT enabler tool was detected. Install a JIT tool (TrollStore, StikDebug, SideStore / SideJIT, JitStreamer, …), or change the JIT enabler in Settings, then try again.";
+"preference.detail.tap_click_duration" = "A touch held for less than this counts as a tap.";
+"preference.title.glass_effect" = "Glass Effect";
+"preference.title.tap_click_button_right" = "Tap sends right-click instead";
+"i18n_str_jit26_not_ready" = "JIT26 debugger is not ready: the JIT breakpoint went unanswered. Please re-enable JIT with the Universal script assigned in StikDebug, then tap Play again.";
+"jit.retry" = "Retry";
+"preference.title.jit26_script_disable" = "Disable iOS 26 JS-Script JIT";
+"preference.style.footer.native" = "Native style is in effect: no hand-drawn glass overlay is added, and the glass switch and strength below are unavailable.";
+"preference.debug.jit_enabler.sidestore" = "SideStore";
+"i18n_str_9101" = "Tall";
+"preference.title.glass_strength" = "Glass Strength";
+"jit.wait.abort.title" = "JIT not available";
+"preference.debug.jit_enabler.jitstreamer" = "JitStreamer-EB";
+"jit.wait.trollstore" = "Enable JIT for this app in TrollStore, then return to the launcher. Waiting up to 30 seconds…";
+"login.warn.title.ios19_jitdead" = "Amethyst is not supported on iOS 26 or later.";
+"preference.debug.jit_enabler.manual" = "Manual (attach a debugger yourself)";
+"preference.title.jit_enabler" = "JIT Enabler";
+"neoforge.no_version_for_mc" = "No NeoForge build has been released for Minecraft %@ yet";
+"preference.detail.auto_check_update" = "Automatically check GitHub Releases when the launcher starts. At most once per hour; versions you chose to ignore are not shown again.";
+"preference.debug.jit_enabler.stikjit" = "StikDebug / StikJIT";
+"preference.title.renderer.debug.sfpew" = "SFPEW (<=1.16.x) - fixed-function emulation, backend defaults to MobileGlues, EXPERIMENTAL";
+"preference.title.renderer.debug.mobilegl" = "MobileGL Vulkan (1.17+) - OpenGL 3.3 Core, EXPERIMENTAL";
+"preference.detail.tap_click_button_right" = "Legacy. On forces tap = right-click (same as mode = Always right).";
+"jit.wait.manual" = "Please go to your JIT tool now and enable JIT for this app. Waiting up to 30 seconds…";
+"preference.title.launcher_language" = "Language";
+"update_dialog.version_from" = "%@  (current: %@)";
+"preference.style.auto" = "Auto";
+"preference.title.renderer.debug.mobilegl_gles" = "MobileGL GLES (1.17+) - OpenGL 3.3 Core via OpenGL ES, EXPERIMENTAL";
+"preference.style.footer.supported" = "Auto follows the system: Liquid Glass on iOS 26 and later, Native on earlier versions.";
+"i18n_str_jit26_pending" = "JIT: Enabled (attaches on launch)";
+"preference.style.footer.unsupported" = "This system is older than iOS 26, so only the Native style is available. The launcher uses standard system materials instead of drawing its own glass.";
+"update_dialog.later" = "Later";
+"login.warn.message.ios19_jitdead" = "Due to changes in iOS that inhibit the ability to enable JIT, Amethyst cannot work in its current state and requires heavy research to find a new path forward.
+Pressing OK will close the app.";
+"jit.wait.auto" = "Waiting for JIT to become ready. Enable JIT for this app with your JIT tool (TrollStore, StikDebug, SideStore / SideJIT, JitStreamer, …), then return to the launcher. Waiting up to 30 seconds…";
+"preference.detail.jit26_script_disable" = "Stop sending UniversalJIT26.js to the JIT tool when launching the game (plain debugger-attach JIT). Only turn this on if your tool doesn't support scripts or the script misbehaves; devices that need system-level memory mapping (TXM) may fail to launch the game with this enabled.";
+"jit.wait.timeout.message" = "Tried to launch your JIT enabler, but JIT was not ready within 30 seconds, so the launch was canceled. Enable JIT for this app and try again (you can also change the JIT enabler in Settings).";
+"update_dialog.update" = "Update";
+"preference.title.renderer.debug.virgl" = "VirGL (<=26.2) - Mesa virgl guest + vtest server, EXPERIMENTAL";
+"jit.wait.timeout.foreground.message" = "Tried to launch your JIT enabler, but JIT was still not detected after you returned to the launcher (up to 30 seconds of active waiting in the foreground, 180 seconds total). The launch was canceled. Enable JIT for this app and try again (you can also change the JIT enabler in Settings).";
+"preference.title.tap_click_mode-right" = "Always right";
+"preference.title.renderer.debug.metal" = "Metal (metallum)";
+"jit.wait.blocked.message" = "The JIT debugger is not responding (nothing is servicing the breakpoint). Make sure JIT is enabled in a way that keeps the debugger attached and uses the UniversalJIT26 script, then launch again.";
+"preference.title.tap_click_mode-auto" = "Auto (by target)";
+"preference.debug.jit_enabler.stosdebug" = "StosDebug";
+"preference.title.glass_style" = "Interface Style";
+"preference.title.tap_click_duration" = "Tap max duration (ms)";
+"update_dialog.title" = "New version available";
+"preference.debug.jit_enabler.trollstore" = "TrollStore";
+"preference.title.renderer.debug.gl4eszl2" = "GL4ES (ZL2 classic) - string-rewrite GLSL to ESSL, EXPERIMENTAL";
+"update_dialog.published_at" = "Published %@";
+/* ★ [STALE-TITLE] 补齐上一轮新增的分组标题键：此前仅 en/zh-Hans 有 ⇒ 本语言回退英文，与其它分组标题(中文)不一致 */
+"preference.group.runtime" = "内存与性能";
+"preference.group.java" = "Java 与启动参数";
+
+/* ★ [HOST-BUG-A] AI 页面顶部标题本地化 */
+"ai.session_list.title" = "セッション一覧";
+"ai.provider_config.title" = "プロバイダ設定";
+"ai.provider_config.edit" = "プロバイダを編集";
+"ai.provider_config.add" = "プロバイダを追加";
+"ai.system_prompt.title" = "システムプロンプト";
+"ai.assistant.title" = "AI アシスタント";
+"ai.session.new" = "新しい会話";

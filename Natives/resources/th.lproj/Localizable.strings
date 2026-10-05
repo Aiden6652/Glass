@@ -54,13 +54,3 @@
 "preference.detail.auto_ram" = "เปิดใช้งานตัวปรับ RAM อัตโนมัติ";
 "preference.detail.allocated_memory" = "ควบคุมเเรมที่จะให้กับเกมมายคราฟ";
 "controller_configurator.playstation.title.named_back" = "เลือก";
-
-/* Glass: 本体+加载器串联安装 — 原版预装失败 */
-"i18n_str_191" = "ติดตั้ง vanilla %@ ไม่สำเร็จ\n\n%@ ยังไม่ได้ติดตั้ง กรุณาตรวจสอบการเชื่อมต่อเครือข่ายแล้วลองใหม่";
-
-/* Glass: 玻璃质感档位设置项 */
-"i18n_str_2068" = "สไตล์กระจก";
-"i18n_str_2069" = "ปิด";
-"i18n_str_2070" = "มาตรฐาน";
-"i18n_str_2071" = "เข้ม";
-"i18n_str_2072" = "กระจกเหลว";

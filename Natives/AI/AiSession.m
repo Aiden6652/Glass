@@ -4,6 +4,7 @@
 //
 
 #import "AiSession.h"
+#import "utils.h"   // ★ [HOST-BUG-A] 统一取词 localize()
 
 @implementation AiSession
 
@@ -17,7 +18,7 @@
     self = [super init];
     if (self) {
         _identifier = [NSUUID UUID].UUIDString;
-        _title = @"新会话";
+        _title = localize(@"ai.session.new", @"新会话");   // ★ [HOST-BUG-A]
         NSDate *now = [NSDate date];
         _createdAt = now;
         _updatedAt = now;

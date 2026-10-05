@@ -9,14 +9,29 @@
 #import "LauncherPreferences.h"
 #import "UIImageView+AFNetworking.h"
 #import "BackgroundManager.h"
-#import "SkinCacheManager.h"
+// ★ [ACCT-AUDIT] 删除账户时清理其自定义头像文件（Documents/avatars/<accountId>.png）。
+#import "AvatarManager.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
+// ★ [EDIT3] 头像设置入口:复用既有通知动作(LauncherRightPanelViewController norightPostAction:)。
+#import "LauncherRightPanelViewController.h"
 
 @interface AccountListViewController()<ASWebAuthenticationPresentationContextProviding>
 
 @property(nonatomic, strong) NSMutableArray *accountList;
 @property(nonatomic) ASWebAuthenticationSession *authVC;
+// ★ [ADDBTN-INSET] 底部「添加账户」按钮的底边约束:单独持有,交由布局期按【实际遮挡量】调整。
+@property(nonatomic, strong) NSLayoutConstraint *ameAddAccountBottomConstraint;
+// ★ [ACCT-DUP] 登录/选号重入守卫：同一时刻只允许一条登录流程在飞。
+@property(nonatomic) BOOL ameLoginInFlight;
+// ★ [ACCT-DUP] 登录「代数」:每次发起登录自增;回调携带旧代数时被判定过期并丢弃,
+//   防止上一次登录的迟到回调改动本次 UI(回调侧防重的 generation 计数)。
+@property(nonatomic) NSUInteger ameAuthGeneration;
+// ★ [ACCT-DUP] 「添加账户」入口重入守卫:防连点 push 出两个登录方式页。
+@property(nonatomic) BOOL ameAddAccountInFlight;
+// ★ [ACCT-DONE] 在飞锁「代次」:每次置位/解锁自增;看门狗延时块只在代次未变且仍在飞时解锁,
+//   避免把后来的一次新登录误解锁。
+@property(nonatomic) NSUInteger ameLoginInFlightToken;
 
 @end
 
@@ -36,18 +51,8 @@
         [self.accountList removeAllObjects];
     }
 
-    // List accounts
-    NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *files = [fm contentsOfDirectoryAtPath:listPath error:nil];
-    for(NSString *file in files) {
-        NSString *path = [listPath stringByAppendingPathComponent:file];
-        BOOL isDir = NO;
-        [fm fileExistsAtPath:path isDirectory:(&isDir)];
-        if(!isDir && [file hasSuffix:@".json"]) {
-            [self.accountList addObject:parseJSONFromFile(path)];
-        }
-    }
+    // List accounts（★ [ACCT-DUP] 载入前先合并存量重复，再过滤损坏文件）
+    [self ameLoadAccountListFromDisk];
 
     // 参照 FCL：卡片式账户列表，去除默认分割线，圆角卡片自带视觉分隔
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
@@ -82,6 +87,139 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+#pragma mark - ★ [ACCOUNTBACK] 返回键(账户链路“进得去出不来”修复)
+
+/// ★ [ACCOUNTBACK] 每次出现时保证本页有一个**可用的返回出口**。
+///
+/// 根因(实查,见 _EDITMODE_REPORT.md ①):
+///   showAccountManager(LauncherRootViewController.m:848 / LauncherCardLayoutViewController.m:989)
+///   把本页作为**一个全新 UINavigationController 的根**(initWithRootViewController:)塞进中间内容区。
+///   根视图控制器没有可 pop 的上级 ⇒ UIKit 不会给返回键,导航栏虽然可见却是一个空壳
+///   ⇒ 用户从主页进得来、出不去。
+///
+/// 修法(不改任何账户业务逻辑,只补出口):
+///   ① 确认本页确实是“导航栈根、没有系统返回键”时,注入一枚「返回」左键;
+///      点击只发既有通知 ShowHomePage —— RootVC(:602) / CardLayoutVC(:752) 都已监听
+///      并切回主页,故不依赖具体宿主类,也不用复制任何导航代码。
+///   ② 顺带把承载本页的那个 nav 的导航栏显示出来(navigationBarHidden = NO)。
+///      ★ 这里**故意不做 viewWillDisappear 还原**:该 nav 是 showAccountManager 为账户链路
+///        临时新建、且只服务这一条链路的私有容器;若在 disappear 时还原成 hidden,
+///        紧接着 push 上来的登录页(AccountLoginViewController)就会丢掉系统返回键 ——
+///        那正是本任务要修的毛病。作用域仅限这条私有 nav,不会影响别的页面。
+///   ③ 触发时机放在 viewWillAppear:此时 navigationController 关系已经建立。
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // ★ [ACCT-DUP] 从登录方式页 pop 回来时解除「添加账户」重入锁（入口在 push 前置位）。
+    self.ameAddAccountInFlight = NO;
+    // ★ [ACCT-DONE] 每次出现都无条件把【登录在飞锁】归零:即便上一轮因回调丢失/网络 hang
+    //   把锁留在置位态(表禁用、按钮禁用),回到本页也一定可交互。幂等:在飞期间本页本就可见,
+    //   viewWillAppear 不会重复触发,故不会打断真正进行中的登录。
+    [self ameSetLoginInFlight:NO];
+    [self ameAccountEnsureBackItemIfNeeded];
+}
+
+#pragma mark - ★ [ADDBTN-INSET] 底部「添加账户」按钮避开底栏
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self ame_updateAddAccountButtonInset];
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self ame_updateAddAccountButtonInset];
+}
+
+/// 把按钮顶到底栏之上:inset = max(自身 safeArea 底, 底栏与本页底部的【实际重叠】高度)。
+///   这样在"有/无底栏、底栏显示/隐藏、横竖屏、底栏半透明与否"下都成立;
+///   找不到底栏时退化为 safeAreaInsets.bottom(与系统一致)。
+- (void)ame_updateAddAccountButtonInset {
+    if (!self.ameAddAccountBottomConstraint) { return; }
+
+    CGFloat inset = self.view.safeAreaInsets.bottom;
+
+    UITabBarController *tbc = self.tabBarController;
+    if (!tbc) {
+        // 本页挂在主页的「内容容器」里,不一定是 tabBarController 的直接子 VC ⇒ 再往上找一层
+        UIViewController *root = self.view.window.rootViewController;
+        if ([root isKindOfClass:[UITabBarController class]]) {
+            tbc = (UITabBarController *)root;
+        }
+    }
+    UIView *bar = tbc.tabBar;
+    if (tbc && bar && !bar.hidden && bar.window) {
+        CGRect barRect = [self.view convertRect:bar.bounds fromView:bar];
+        CGFloat overlap = CGRectGetMaxY(self.view.bounds) - CGRectGetMinY(barRect);
+        // 只在"确实被压住"且量值合理时采纳(防异常值)
+        if (overlap > 0 && overlap < CGRectGetHeight(self.view.bounds) * 0.5) {
+            inset = MAX(inset, overlap);
+        }
+    }
+    self.ameAddAccountBottomConstraint.constant = -(inset + 16.0);
+}
+
+/// ★ [ACCOUNTBACK] 见 viewWillAppear 注释。
+- (void)ameAccountEnsureBackItemIfNeeded {
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return;                                       // 不在导航栈(无宿主 nav)⇒ 无从注入
+
+    // ① 显示导航栏:根页没有可 pop 的对象时,系统不会画返回键,空导航栏等于没有出口。
+    if (nav.navigationBarHidden) {
+        [nav setNavigationBarHidden:NO animated:NO];
+    }
+    // 语义色:随浅色/深色外观自适应(与主页顶栏同一套语义色),不写死黑白。
+    nav.navigationBar.tintColor = [UIColor labelColor];
+    // ★ [ACCT-DONE] 导航栏出口永不失效:每次出现都把导航栏与已注入的左键拉回可交互态。
+    //   账户链路的「完成/返回」是唯一出口,绝不能因为一次在飞锁/转圈把导航 chrome 一起关掉
+    //   (用户实测:「完成」点不动 ⇒ 进得去出不来)。业务锁只该锁"会触发登录的控件"。
+    nav.navigationBar.userInteractionEnabled = YES;
+    if (self.navigationItem.leftBarButtonItem) self.navigationItem.leftBarButtonItem.enabled = YES;
+
+    // ★ [EDIT3] 自定义头像菜单的**新入口**:本页 = 点头像进入的「账户管理」页。
+    //   原来“长按主页欢迎卡头像”才能弹出的自定义头像菜单(导入 / 清除),其长按触发器已让位给
+    //   “长按进编辑模式”(见 LauncherNewsViewController.m ★[EDIT3]);为不丢功能,在此给一颗
+    //   明确可见的右键「自定义头像」:点击**只** post 既有动作名 avatarMenu ⇒ 仍由
+    //   LauncherRightPanelViewController 的 showAvatarMenu: 原实现弹出,菜单项/回调/账户校验/
+    //   裁剪保存链路一律不动;本页不复制任何头像逻辑。
+    //   幂等:已注入过就不再注入。按钮挂在本 VC 的 navigationItem 上 ⇒ 只有本页可见,
+    //   push 出去的登录页用的是它自己的 navigationItem,不受影响。
+    if (!self.navigationItem.rightBarButtonItem) {
+        UIBarButtonItem *avatarItem = [[UIBarButtonItem alloc] initWithTitle:localize(@"i18n_str_416", @"自定义头像")
+                                                                      style:UIBarButtonItemStylePlain
+                                                                     target:self
+                                                                     action:@selector(ameAccountAvatarSettingsTapped)];
+        avatarItem.tintColor = [UIColor labelColor];
+        avatarItem.accessibilityLabel = localize(@"i18n_str_416", @"自定义头像");
+        self.navigationItem.rightBarButtonItem = avatarItem;
+    }
+
+    // ② 只在“栈里没有再上一级(没有系统返回键)”时注入;已被 push 的页面保留系统返回键原样。
+    if (nav.viewControllers.count > 1) return;
+    if (self.navigationItem.leftBarButtonItem) return;      // 幂等:已注入过就不再注入
+
+    UIBarButtonItem *backItem = [[UIBarButtonItem alloc] initWithTitle:localize(@"resman.common.done", nil)
+                                                                style:UIBarButtonItemStylePlain
+                                                               target:self
+                                                               action:@selector(ameAccountBackToHomeTapped)];
+    backItem.tintColor = [UIColor labelColor];
+    backItem.accessibilityLabel = localize(@"resman.common.done", nil);
+    self.navigationItem.leftBarButtonItem = backItem;
+
+    // ③ 横屏时灵动岛在侧边(≈59pt):左键由系统导航栏摆放在 safeAreaLayoutGuide 内,天然不会被岛压住。
+}
+
+/// ★ [ACCOUNTBACK] 「返回」= 回主页。只发既有通知,不动任何账户业务(登录/登出/头像/用户名)。
+- (void)ameAccountBackToHomeTapped {
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ShowHomePage" object:nil];
+}
+
+/// ★ [EDIT3] 「自定义头像」= 弹自定义头像菜单(导入 / 清除)。
+///   只转发到既有动作名 avatarMenu ⇒ LauncherRightPanelViewController 的 showAvatarMenu: 原实现,
+///   菜单选项、回调、账户校验、裁剪/保存链路一律不变;本页不复制任何头像逻辑。
+- (void)ameAccountAvatarSettingsTapped {
+    [LauncherRightPanelViewController norightPostAction:@"avatarMenu"];
+}
+
 - (void)setupAddAccountButton {
     UIButton *addBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     addBtn.translatesAutoresizingMaskIntoConstraints = NO;
@@ -103,13 +241,19 @@
     [self.view addSubview:addBtn];
     // 使用 frameLayoutGuide（UITableView 的可见区域锚点）而非 safeAreaLayoutGuide，
     // 确保按钮随可见区域底部浮动，不会跟随 cell 滚动
+    // ★ [ADDBTN-INSET] 底边约束【单独持有】:底栏(UITabBarController 的 tabBar)是半透明悬浮的,
+    //   本页内容区延伸到底栏之下 ⇒ 写死 -16 会让按钮被底栏压住(用户实测:新旧系统都被挡)。
+    //   改为交给 ame_updateAddAccountButtonInset 按实际遮挡量设置 constant。
+    self.ameAddAccountBottomConstraint =
+        [addBtn.bottomAnchor constraintEqualToAnchor:self.tableView.frameLayoutGuide.bottomAnchor constant:-16];
     [NSLayoutConstraint activateConstraints:@[
-        [addBtn.bottomAnchor constraintEqualToAnchor:self.tableView.frameLayoutGuide.bottomAnchor constant:-16],
+        self.ameAddAccountBottomConstraint,
         [addBtn.centerXAnchor constraintEqualToAnchor:self.tableView.frameLayoutGuide.centerXAnchor],
         [addBtn.heightAnchor constraintEqualToConstant:48],
         [addBtn.widthAnchor constraintGreaterThanOrEqualToConstant:160]
     ]];
     self.addAccountButton = addBtn;
+    [self ame_updateAddAccountButtonInset];
 }
 
 - (void)addAccountTapped {
@@ -207,17 +351,9 @@
     avatarView.backgroundColor = [UIColor colorWithWhite:0.18 alpha:1.0];
     avatarView.image = [UIImage imageNamed:@"DefaultAccount"];
     [cardView addSubview:avatarView];
-
-    // 头像优先级：本地皮肤缓存（离线可用）> 在线 profilePicURL > 默认占位图
-    NSString *accountId = accountData[@"accountId"] ?: accountData[@"username"];
-    UIImage *cachedHead = [SkinCacheManager cachedHeadImageForAccount:accountId];
-    if (cachedHead) {
-        avatarView.image = cachedHead;
-    } else {
-        NSString *picURLStr = [accountData[@"profilePicURL"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
-        if (picURLStr.length > 0) {
-            [avatarView setImageWithURL:[NSURL URLWithString:picURLStr] placeholderImage:[UIImage imageNamed:@"DefaultAccount"]];
-        }
+    NSString *picURLStr = [accountData[@"profilePicURL"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+    if (picURLStr.length > 0) {
+        [avatarView setImageWithURL:[NSURL URLWithString:picURLStr] placeholderImage:[UIImage imageNamed:@"DefaultAccount"]];
     }
 
     // 用户名
@@ -304,14 +440,18 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:NO];
-    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+    // ★ [ACCT-DUP] 重入守卫：登录流程在飞时忽略重复选行（连点/长按），避免同一账户被登录两次。
+    if (self.ameLoginInFlight) return;
+    [self ameSetLoginInFlight:YES];
+    NSUInteger generation = ++self.ameAuthGeneration;
 
-    self.modalInPresentation = YES;
-    self.tableView.userInteractionEnabled = NO;
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
     [self addActivityIndicatorTo:cell];
 
     id callback = ^(id status, BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^(){
+            // ★ [ACCT-DUP] 回调侧防重：只接受本次登录(generation)的回调，丢弃上一次登录的迟到回调。
+            if (generation != self.ameAuthGeneration) return;
             [self callbackMicrosoftAuth:status success:success forCell:cell];
         });
     };
@@ -323,18 +463,27 @@
     if (loadKey.length == 0) {
         loadKey = accountData[@"username"];
     }
+    BaseAuthenticator *auth = nil;
     if (accountData[@"clientToken"] != nil) {
         // This is a third party account
-        [[ThirdPartyAuthenticator loadSavedName:loadKey] refreshTokenWithCallback:callback];
+        auth = [ThirdPartyAuthenticator loadSavedName:loadKey];
     } else {
         // This is a Microsoft or local account
-        // 切号时顺带刷新该账户的皮肤缓存（内部有节流 + 失败回退本地缓存）
-        [SkinCacheManager refreshSkinForAccount:loadKey
-                                       authData:(NSDictionary *)accountData
-                                          force:NO
-                                     completion:nil];
-        [[BaseAuthenticator loadSavedName:loadKey] refreshTokenWithCallback:callback];
+        auth = [BaseAuthenticator loadSavedName:loadKey];
     }
+    // ★ [ACCT-AUDIT] 状态一致性：loadSavedName 在账户文件缺失/损坏（或读取报错）时返回 nil，
+    //   此时 refreshTokenWithCallback: 不会触发任何 callback ⇒ 列表会永久停留在
+    //   modalInPresentation=YES + userInteractionEnabled=NO + 转圈，用户被卡死只能杀进程。
+    //   这里补回滚：恢复可交互、清掉转圈并提示，accountList 与磁盘状态保持不变。
+    if (auth == nil) {
+        // ★ [ACCT-DUP] 与重入守卫兼容：统一走 ameSetLoginInFlight:NO 恢复交互与按钮，
+        //   保持上一轮 [ACCT-AUDIT] 的 nil 回滚语义（恢复可交互、停转圈、提示）。
+        [self ameSetLoginInFlight:NO];
+        [self removeActivityIndicatorFrom:cell];
+        showDialog(localize(@"Error", nil), @"Account data could not be loaded.");
+        return;
+    }
+    [auth refreshTokenWithCallback:callback];
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -357,8 +506,9 @@
             [MicrosoftAuthenticator clearTokenDataOfProfile:xuid];
         }
         [fm removeItemAtPath:path error:nil];
-        // 同步清理该账户的皮肤缓存，避免删除后残留占用空间
-        [SkinCacheManager removeCacheForAccount:accountId];
+        // ★ [ACCT-AUDIT] 清理：删除账户时一并移除其自定义头像文件（Documents/avatars/<accountId>.png），
+        //   避免用户图像残留在磁盘上。AvatarManager 按 accountId 存储，删除幂等、文件不存在时安全跳过。
+        [[AvatarManager sharedManager] removeAvatarForAccount:accountId];
         // 若删除的正是当前选中账户，清空 selected_account，避免下次启动尝试加载已删除的账户
         if ([getPrefObject(@"internal.selected_account") isEqualToString:accountId]) {
             setPrefObject(@"internal.selected_account", @"");
@@ -385,6 +535,9 @@
 }
 
 - (void)actionAddAccount:(UIView *)sender {
+    // ★ [ACCT-DUP] 重入守卫：防连点「添加账户」push 出两个登录方式页（解锁见 viewWillAppear）。
+    if (self.ameAddAccountInFlight) return;
+    self.ameAddAccountInFlight = YES;
     // 参照 FCL：push 卡片式登录方式选择页（替代原来的 ActionSheet）
     AccountLoginViewController *loginVC = [[AccountLoginViewController alloc] init];
     loginVC.onSelectLoginType = ^(AccountLoginType type) {
@@ -447,6 +600,9 @@
         } else {
             id callback = ^(id status, BOOL success) {
                 if (self.whenItemSelected) self.whenItemSelected();
+                // ★ [ACCT-DUP] 本地登录也刷新列表（与微软/三方路径口径一致），
+                //   立即反映存储幂等去重的结果（重复用户名只会得到同一条）。
+                [self reloadAccountList];
                 [self dismissViewControllerAnimated:YES completion:nil];
             };
             [[[LocalAuthenticator alloc] initWithInput:usernameField.text] loginWithCallback:callback];
@@ -504,8 +660,10 @@
         NSDictionary *queryItems = [self parseQueryItems:callbackURL.absoluteString];
         if (queryItems[@"code"]) {
             dispatch_async(dispatch_get_main_queue(), ^(){
-                self.modalInPresentation = YES;
-                self.tableView.userInteractionEnabled = NO;
+                // ★ [ACCT-DONE] 统一走 in-flight 锁(只锁列表+「添加账户」按钮,绝不动导航栏出口);
+                //   原实现此处散写 modalInPresentation/tableView —— modalInPresentation 对本页
+                //   (内容容器里的子 VC)无效,已随 ameSetLoginInFlight: 一并收敛。
+                [self ameSetLoginInFlight:YES];
                 // 仅当 sender 是 UITableViewCell 时才显示加载指示器
                 if ([sender isKindOfClass:[UITableViewCell class]]) {
                     [self addActivityIndicatorTo:(UITableViewCell *)sender];
@@ -567,15 +725,13 @@
             }
             // 登录成功后刷新列表以显示新账户
             if (cell) [self removeActivityIndicatorFrom:cell];
-            self.modalInPresentation = NO;
-            self.tableView.userInteractionEnabled = YES;
+            [self ameSetLoginInFlight:NO];
             [self reloadAccountList];
             if (self.whenItemSelected) self.whenItemSelected();
             [self dismissViewControllerAnimated:YES completion:nil];
         } else {
             // 认证失败：恢复交互并展示错误
-            self.modalInPresentation = NO;
-            self.tableView.userInteractionEnabled = YES;
+            [self ameSetLoginInFlight:NO];
             if (cell) [self removeActivityIndicatorFrom:cell];
 
             if ([status isKindOfClass:[NSError class]]) {
@@ -596,21 +752,39 @@
     } else if (success) {
         // 成功登录，无消息
         if (cell) [self removeActivityIndicatorFrom:cell];
-        self.modalInPresentation = NO;
-        self.tableView.userInteractionEnabled = YES;
+        [self ameSetLoginInFlight:NO];
         [self reloadAccountList];
         if (self.whenItemSelected) self.whenItemSelected();
         [self dismissViewControllerAnimated:YES completion:nil];
+    } else {
+        // ★ [ACCT-DONE] status==nil 且 success==NO（取消/无内容回调）也必须解锁 ——
+        //   原实现缺这一支 ⇒ 该路径下 in-flight 永久置位、列表与「添加账户」永久禁用(只能杀进程)。
+        //   这里显式释放并给出可读提示，保证"取消"路径同样收敛。
+        if (cell) [self removeActivityIndicatorFrom:cell];
+        [self ameSetLoginInFlight:NO];
+        showDialog(localize(@"Error", nil), localize(@"login.error.invalid_response", nil));
     }
 }
 
 /// 重新加载账户列表并刷新表格（FCL 风格：登录/删除后刷新卡片视图）
 - (void)reloadAccountList {
+    [self ameLoadAccountListFromDisk];
+    [self.tableView reloadData];
+}
+
+/// ★ [ACCT-DUP] 从磁盘载入账户列表（viewDidLoad / reloadAccountList 共用）：
+///   ① 载入前先调用 deduplicateAccountsDirectory 合并**同身份**的存量重复（幂等，只删真正重复的文件，
+///      不同 username/xuid/profileId 的合法多账号一律保留）；
+///   ② 跳过 parseJSONFromFile 失败的损坏文件（返回 @{NSErrorObject:…}），
+///      避免列表里凭空多出一条无用户名的“幽灵账户”。
+- (void)ameLoadAccountListFromDisk {
     if (self.accountList == nil) {
         self.accountList = [NSMutableArray array];
     } else {
         [self.accountList removeAllObjects];
     }
+    [BaseAuthenticator deduplicateAccountsDirectory];
+
     NSString *listPath = [NSString stringWithFormat:@"%s/accounts", getenv("POJAV_HOME")];
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray *files = [fm contentsOfDirectoryAtPath:listPath error:nil];
@@ -618,11 +792,48 @@
         NSString *path = [listPath stringByAppendingPathComponent:file];
         BOOL isDir = NO;
         [fm fileExistsAtPath:path isDirectory:(&isDir)];
-        if (!isDir && [file hasSuffix:@".json"]) {
-            [self.accountList addObject:parseJSONFromFile(path)];
-        }
+        if (isDir || ![file hasSuffix:@".json"]) continue;
+        NSMutableDictionary *data = parseJSONFromFile(path);
+        if (data == nil || data[@"NSErrorObject"] != nil) continue;
+        [self.accountList addObject:data];
     }
-    [self.tableView reloadData];
+}
+
+/// ★ [ACCT-DUP] 统一的「登录进行中」开关：置位的同一处即禁用列表与「添加账户」按钮，
+///   结束（成功/失败/取消/nil 回滚/页面离开/看门狗）时恢复——保证一次登录流程在飞期间无法被重复触发。
+///
+/// ★ [ACCT-DONE] 本轮修正两点：
+///   ① 只锁【会触发登录的控件】(表格行 + 「添加账户」按钮)。原先还写 self.modalInPresentation,
+///      但本页是内容容器里的**子 VC**(setContentViewController: 塞进主页 contentContainer),
+///      不是模态呈现 ⇒ 该属性无意义,是历史 FormSheet 时代的残留;真正该守的是"导航栏出口(
+///      「完成」左键)任何时候都能点",导航 chrome 一律不锁(见 ameAccountEnsureBackItemIfNeeded)。
+///   ② 加【看门狗】:置位后 60s 若代次未变且仍在飞 ⇒ 强制解锁。防"回调丢失/网络 hang"把
+///      列表永久锁死(与 viewWillAppear 的无条件解锁互为双保险 = defer 式保证)。
+- (void)ameSetLoginInFlight:(BOOL)inFlight {
+    self.ameLoginInFlight = inFlight;
+    self.tableView.userInteractionEnabled = !inFlight;
+    self.addAccountButton.enabled = !inFlight;
+    NSUInteger token = ++self.ameLoginInFlightToken;
+    if (!inFlight) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf.ameLoginInFlightToken != token) return;   // 已被正常解锁/又换了新一次 ⇒ 不管
+        if (!strongSelf.ameLoginInFlight) return;
+        NSLog(@"[ACCT-DONE] in-flight 看门狗超时(60s),强制解锁(防回调丢失把列表锁死)");
+        [strongSelf ameSetLoginInFlight:NO];
+    });
+}
+
+/// ★ [ACCT-DONE] 页面真的离开窗口(被 pop / 被内容区换走)时解锁;只是被网页登录盖住时
+///   self.view.window 仍在 ⇒ 不解锁,不会打断正在进行的登录。
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    if (self.view.window == nil) {
+        [self ameSetLoginInFlight:NO];
+    }
 }
 
 #pragma mark - UIPopoverPresentationControllerDelegate

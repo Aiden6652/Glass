@@ -35,13 +35,14 @@ FOUNDATION_EXPORT NSString *const PLMirrorMCIMRootURL;
 ///   - GameFile / ModLoader → BMCLAPI（参考 ZalithLauncher 2 REPLACE_MIRROR_HOLDERS + Air 现有行为）
 ///   - AssetSearch / AssetDownload → MCIM（保持 MCIMMirror.m 现有精确行为）
 ///
-/// 策略偏好键（值 official_first / mirror_first）：
+/// 策略偏好键（值 auto / official_first / mirror_first）：
 ///   - GameFile      → download.fileSource
 ///   - AssetSearch   → download.assetSearchSource
 ///   - AssetDownload → download.assetDownloadSource
 ///   - ModLoader     → download.modLoaderSource
-/// 未设置时回退旧键 general.download_source（official → 官方优先；bmclapi / mcim → 镜像优先），
-/// 再回退默认官方优先（为 Phase 4 设置项迁移预留平滑过渡）。
+/// auto（默认）对齐 ZL2 MirrorSourceType.AUTO：大陆环境（时区 Asia/Shanghai 等）镜像优先，
+/// 其余官方优先；未设置时回退旧键 general.download_source
+/// （official → 官方优先；bmclapi / mcim → 镜像优先），再回退 auto 语义。
 ///
 /// 特殊规则：MirrorFirst 时 GameFile 的资产资源（resources.download.minecraft.net）
 /// 仍官方优先，以减轻镜像源压力（参考 ZalithLauncher 2 的设计）。
@@ -71,6 +72,11 @@ FOUNDATION_EXPORT NSString *const PLMirrorMCIMRootURL;
 
 /// CurseForge API base URL（等价 MCIMMirror 同名能力：按 AssetSearch 策略返回官方或 MCIM 镜像基址）
 + (NSString *)curseForgeAPIBaseURL;
+
+// ★ [MODPACK-FIX] 无 key 设备强制回落用的 MCIM 镜像基址（免 key，实测 200）。
+//   与 curseForgeAPIBaseURL 的区别：后者按用户策略可能返回官方 api.curseforge.com
+//   （无 x-api-key 恒 403）；本方法恒定返回镜像，供 CurseForgeAPI 在未配置 key 时兜底。
++ (NSString *)mcimCurseForgeAPIBaseURL;
 
 /// 读取指定资源类型当前生效的镜像策略（含旧键回退逻辑）
 + (PLMirrorPolicy)policyForType:(PLMirrorResourceType)type;

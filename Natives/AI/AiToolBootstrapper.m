@@ -17,6 +17,7 @@
 #import "AiSleepTool.h"
 #import "AiDownloadProbe.h"
 #import "AiInstanceCreator.h"
+// ★ [GLASS] 通用联网 / GitHub / 目录授权 / 源码树 / 自省工具
 #import "AiWebFetchTool.h"
 #import "AiGitHubTools.h"
 #import "AiFolderAccessTool.h"
@@ -95,16 +96,16 @@
     // 新建游戏目录实例（ControlledWrite）
     [registry registerTool:[[AiInstanceCreator alloc] init]];
 
-    // ===== 3c 阶段：通用联网浏览工具 =====
+    // ===== ★ [GLASS] 3c 阶段：通用联网浏览工具 =====
     // fetch_url（ReadOnly，任何安全模式直接放行）：允许 AI 查看 GitHub 等任意公开网页/API
     [registry registerTool:[[AiWebFetchTool alloc] init]];
 
-    // ===== 3d 阶段：GitHub 代码推送工具 =====
+    // ===== ★ [GLASS] 3d 阶段：GitHub 代码推送工具 =====
     // github_set_token / github_push（ExternalNetwork）：允许 AI 替用户向 GitHub 推送代码
     [registry registerTool:[[AiGitHubTool alloc] initWithName:@"github_set_token"]];
     [registry registerTool:[[AiGitHubTool alloc] initWithName:@"github_push"]];
 
-    // ===== 3e 阶段：文件访问权限放宽 + GitHub 源码树浏览 =====
+    // ===== ★ [GLASS] 3e 阶段：文件访问权限放宽 + GitHub 源码树浏览 =====
 
     // 文件根目录枚举（ReadOnly）：让 AI 知道当前可访问哪些根（容器 + 已授权外部目录）
     [registry registerTool:[[AiFileTools alloc] initWithName:@"list_roots"]];
@@ -119,7 +120,7 @@
     [registry registerTool:[[AiGitHubTreeTool alloc] initWithName:@"github_read_files"]];
     [registry registerTool:[[AiGitHubTreeTool alloc] initWithName:@"github_search_code"]];
 
-    // ===== 自省工具 =====
+    // ===== ★ [GLASS] 自省工具 =====
     // list_tools（ReadOnly）：让 AI 主动查询当前运行时到底注册了哪些工具，
     // 避免「凭记忆猜工具名」导致调用不存在的工具，也便于用户排查工具缺失。
     [registry registerTool:[[AiListToolsTool alloc] initWithName:@"list_tools"]];

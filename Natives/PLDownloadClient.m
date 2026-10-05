@@ -373,7 +373,7 @@ expectedTotalBytes:(int64_t)expectedTotalBytes {
         config.timeoutIntervalForResource = 86400.0;
     }
 
-    _stateQueue = dispatch_queue_create("com.angelaura.pldownloadclient.state", DISPATCH_QUEUE_SERIAL);
+    _stateQueue = dispatch_queue_create("com.glass.pldownloadclient.state", DISPATCH_QUEUE_SERIAL);
     _operationsLock = [[NSLock alloc] init];
     _operations = [NSMutableDictionary dictionary];
     _sessionDelegate = [[PLDownloadSessionDelegate alloc] init];
@@ -382,7 +382,7 @@ expectedTotalBytes:(int64_t)expectedTotalBytes {
     // delegate 队列保持串行，保证 didFinishDownloadingToURL（同步移动文件）与
     // didCompleteWithError 的顺序性
     NSOperationQueue *delegateQueue = [[NSOperationQueue alloc] init];
-    delegateQueue.name = @"com.angelaura.pldownloadclient.delegate";
+    delegateQueue.name = @"com.glass.pldownloadclient.delegate";
     delegateQueue.maxConcurrentOperationCount = 1;
 
     _session = [NSURLSession sessionWithConfiguration:config

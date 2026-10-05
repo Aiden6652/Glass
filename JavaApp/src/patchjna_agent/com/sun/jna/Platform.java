@@ -72,6 +72,8 @@ public final class Platform {
     public static final String ARCH;
 
     private static final List<Class> matchingClasses = new ArrayList<Class>();
+    /** ★ [LOG-CLEAN] Platform.isMac 的调用者日志只报一次(防 voice-chat mod 高频刷屏)。 */
+    private static boolean s_isMacCallerLogged = false;
     private static Object stackWalker;
     private static Method stackWalkerGetCaller;
     private static boolean isMacFoundVoiceChatMod;
@@ -127,7 +129,12 @@ public final class Platform {
         // so we must trick them into NOT forcefully disabling it
         try {
             Class caller = (Class)stackWalkerGetCaller.invoke(stackWalker);
-            System.out.println("Platform.isMac called from " + caller.getName());
+            // ★ [LOG-CLEAN] 原每调用一次打一行(voice-chat mod 高频调用 ⇒ JNA 刷屏)。
+            //   只报第一次, 保留"确实被谁调用过"的取证价值。
+            if (!s_isMacCallerLogged) {
+                s_isMacCallerLogged = true;
+                System.out.println("Platform.isMac called from " + caller.getName());
+            }
             return !matchingClasses.contains(caller);
         } catch (Throwable e) {
             // We're calling a public method, this should never happen
