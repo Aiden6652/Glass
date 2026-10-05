@@ -378,8 +378,8 @@ endif()
 set_source_files_properties("${AME_TABBAR_OBJ}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
 message(STATUS "★ [SWIFT-BAR] swiftc=${AME_SWIFTC} triple=${AME_SWIFT_TRIPLE} obj=${AME_TABBAR_OBJ} swiftlib=${AME_SWIFT_LIBDIR} build=${AME_TABBAR_NEEDS_BUILD}")
 
-# Angel Aura Amethyst
-add_executable(Glass)
+# Glass
+add_executable(Glass
   dyld_bypass_validation.m
   dyld_patch_platform.m
   main.m
